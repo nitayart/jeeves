@@ -1839,7 +1839,8 @@ function buildModelList(host: HTMLElement, models: string[], def: string, onEdit
       /* discovery-first (design): ↻ fetch pulls the endpoint's models into the
          dropdown; choosing one adds it. Manual entry stays as a fallback. The
          fetched set lives on state so it survives a repaint (no re-fetch per add). */
-      const avail = (state.discovered || []).filter(function(d){ return !state.models.includes(d); });
+      const cmpModel = function(a: string, b: string){ return a.localeCompare(b, undefined, { sensitivity: 'base' }) || (a < b ? -1 : a > b ? 1 : 0); };
+      const avail = [...(state.discovered || [])].sort(cmpModel).filter(function(d){ return !state.models.includes(d); });
       const pick = document.createElement('div'); pick.className = 'llmmadd';
       const sel = document.createElement('select'); sel.className = 'llmmadd-sel'; sel.setAttribute('aria-label', 'add a discovered model');
       const ph = document.createElement('option'); ph.value = '';
@@ -1864,16 +1865,24 @@ function buildModelList(host: HTMLElement, models: string[], def: string, onEdit
         const rr = await tryOp('llm.models', { id: provId });
         fetchBtn.disabled = false; fetchBtn.textContent = '↻ fetch';
         if (rr.error){ if (err) err.textContent = rr.error.message; return; }
-        state.discovered = rr.data && rr.data.models ? rr.data.models : [];
+        state.discovered = [...(rr.data?.models ?? [])].sort(cmpModel);
         paint();
       });
       pick.appendChild(sel); pick.appendChild(fetchBtn);
       host.appendChild(pick);
       const man = document.createElement('div'); man.className = 'llmmadd llmmadd-manual';
-      man.innerHTML = '<input placeholder="or type a model id" aria-label="type a model id" spellcheck="false"><button class="mbtn llmmadd-go" type="button">ADD</button>';
-      const minp = man.querySelector('input')!;
+      const minp = document.createElement('input');
+      minp.placeholder = 'or type a model id'; minp.setAttribute('aria-label', 'type a model id'); minp.spellcheck = false; minp.autocomplete = 'off';
+      const mbtn = document.createElement('button'); mbtn.className = 'mbtn llmmadd-go'; mbtn.type = 'button'; mbtn.textContent = 'ADD';
+      man.appendChild(minp); man.appendChild(mbtn);
+      if (avail.length){
+        const dl = document.createElement('datalist'); dl.id = name + '-dl';
+        avail.forEach(function(d){ const o = document.createElement('option'); o.value = d; dl.appendChild(o); });
+        minp.setAttribute('list', dl.id);
+        man.appendChild(dl);
+      }
       const mgo = function(){ addModel(minp.value); const again = host.querySelector<HTMLInputElement>('.llmmadd-manual input'); if (again){ again.value = ''; again.focus(); } };
-      man.querySelector('.llmmadd-go')!.addEventListener('click', mgo);
+      mbtn.addEventListener('click', mgo);
       minp.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ e.preventDefault(); mgo(); } });
       host.appendChild(man);
     } else {
@@ -2472,7 +2481,7 @@ export function initAgents(): void {
     const txt = pre.textContent || '';
     const done = function(ok: boolean){ b.textContent = ok ? '✓ copied' : 'copy failed'; window.setTimeout(function(){ b.textContent = '⧉ copy'; }, 1400); };
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(function(){ done(true); }, function(){ done(false); });
-    else { try { const r = document.createRange(); r.selectNodeContents(pre); const sel = window.getSelection(); if (sel){ sel.removeAllRanges(); sel.addRange(r); } done(document.execCommand('copy')); } catch (_e) { done(false); } }
+    else { try { const r = document.createRange(); r.selectNodeContents(pre); const sel = window.getSelection(); if (sel){ sel.removeAllRanges(); sel.addRange(r); } done(document.execCommand('copy')); } catch { done(false); } }
   });
   /* the missions column collapses (× at its top) when the user is done picking a run; ▸ MISSIONS
      in the filter bar brings it back (session state) */
@@ -2488,7 +2497,7 @@ export function initAgents(): void {
      remembered in this browser; the goal text wraps inside the card (overflow-wrap) */
   const msplit = document.getElementById('ag-msplit');
   if (msplit && mcol){
-    try { const w = parseInt(localStorage.getItem('ag.missionsW') || '', 10); if (w >= 200) mcol.style.width = w + 'px'; } catch (e) { /* storage may be unavailable */ }
+    try { const w = parseInt(localStorage.getItem('ag.missionsW') || '', 10); if (w >= 200) mcol.style.width = w + 'px'; } catch { /* storage may be unavailable */ }
     msplit.addEventListener('pointerdown', function(e){
       e.preventDefault(); msplit.classList.add('on'); document.body.classList.add('splitting');
       const move = function(ev: PointerEvent){
@@ -2499,7 +2508,7 @@ export function initAgents(): void {
       const up = function(){
         msplit.classList.remove('on'); document.body.classList.remove('splitting');
         document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up);
-        try { localStorage.setItem('ag.missionsW', String(parseInt(mcol.style.width, 10) || 280)); } catch (e) { /* ignore */ }
+        try { localStorage.setItem('ag.missionsW', String(parseInt(mcol.style.width, 10) || 280)); } catch { /* ignore */ }
       };
       document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
     });

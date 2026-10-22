@@ -6,7 +6,7 @@
 import { $all, S, pushEscape, popEscape, ESC, errMsg, escHtml as esc, isHexColor } from '../ui/hub.js';
 import { tryOp } from '../api.js';
 import { updateCenter, jumpToCode, showCenter, mapSurfaceOn, renderMapChip, notice, activeTargetName } from '../ui/chrome.js';
-import { loadSymbol } from './code.js';
+import { loadSymbol, highlight } from './code.js';
 import type { MapData, MapEdge, MapNode, MapSymbol, TypeKey, TypeRegistry } from '../types.js';
 
 let mapview: HTMLElement, mapworld: HTMLElement, mapedges: SVGSVGElement, maplbl: SVGSVGElement;
@@ -518,10 +518,11 @@ async function populateMapRel(id: string){
       }
     }
   }
+  const lexState = { inBlockComment: false };
   (lines || ([[1, '// no resolvable symbol — open the class to annotate']] as [number, string][])).forEach(function(ln){
     const row = document.createElement('div');
     row.className = 'cx';
-    row.innerHTML = '<span class="cxn">' + ln[0] + '</span><span>' + esc(ln[1]) + '</span>';
+    row.innerHTML = '<span class="cxn">' + ln[0] + '</span><span>' + highlight(ln[1], lexState) + '</span>';
     eb.appendChild(row);
   });
 

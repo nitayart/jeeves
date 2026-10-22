@@ -289,6 +289,19 @@ public interface Engine {
      *  close dialog counts (a JEB database stores decompilations). Stateless engines: 0. */
     default int unsavedDecompilations() { return 0; }
 
+    /** The file this engine persists edits to (e.g. .jdb2 for JEB, or code-data.json for JADX),
+     *  or null when stateless. */
+    default java.io.File persistenceFile() { return null; }
+
+    /** Timestamp of the last persisted save of this target, or {@link java.time.Instant#MIN}
+     *  when no persisted state exists yet. */
+    default java.time.Instant lastSavedAt() {
+        java.io.File f = persistenceFile();
+        if (f == null || !f.isFile()) return java.time.Instant.MIN;
+        try { return java.nio.file.Files.getLastModifiedTime(f.toPath()).toInstant(); }
+        catch (java.io.IOException ex) { return java.time.Instant.ofEpochMilli(f.lastModified()); }
+    }
+
     /** Close the session, releasing engine resources (WORKBENCH_SPEC §3.1). Default: stateless. */
     default void close() {}
 

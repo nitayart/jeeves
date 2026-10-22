@@ -364,6 +364,8 @@ export interface SearchHit {
   preview?: string;
   kind?: string;
   addr?: string;
+  stringId?: string;
+  id?: string;
   context?: SearchContextLine[];
 }
 

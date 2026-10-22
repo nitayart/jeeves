@@ -453,7 +453,7 @@ public final class M3IT {
     /** The production encoder (no test copy — the corpus wire format is asserted
      *  via goldens in the corpus checks). */
     private static String encodeAddr(String addr) {
-        return dev.workbench.engine.jeb.CorpusEncoding.encodeAddr(addr);
+        return dev.workbench.engine.index.CorpusEncoding.encodeAddr(addr);
     }
 
     private static Map<String, Object> firstClass(String tid) throws Exception {

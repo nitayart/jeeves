@@ -1,4 +1,4 @@
-package dev.workbench.engine.jeb;
+package dev.workbench.engine.index;
 
 import dev.workbench.registry.Json;
 import java.io.File;
@@ -21,7 +21,7 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * Background decompiled-text index for one JEB target (VIEWS_SPEC §3), with a
+ * Background decompiled-text index for one target (VIEWS_SPEC §3), with a
  * persisted per-class gz corpus on disk (ROADMAP major item):
  *
  * - Every indexed class's text is written gzipped to
@@ -52,21 +52,23 @@ import java.util.zip.GZIPOutputStream;
  * Cancellable via op.cancel (ticket "search-index" / "search-index:<target>");
  * progress is reported through target.info / search.index.
  */
-final class SearchIndex {
+public final class SearchIndex {
 
     /** WORKBENCH_PROF=1: per-class decompile cost + corpus size logging. */
     private static final boolean PROF = System.getenv("WORKBENCH_PROF") != null;
 
     /** One indexed class: addr + display name + decompiled lines (snapshot). */
-    record Entry(String addr, String fqcn, String[] lines) {}
+    public record Entry(String addr, String fqcn, String[] lines) {}
 
-    interface Host {
+    public interface Host {
         List<String[]> classSnapshot();                       // [addr, fqcn] per class
         String decompileText(String classAddr);               // engine-locked decompile
         String classLabel(String classAddr);                  // display name for one class
         void evictDecompiled(String classAddr);               // engine-locked AST product eviction
         Map<String, Object> indexSourceIdentity();             // exact executable bytes + analysis generation
-        long jdb2Mtime();                                     // mtime of the jdb2 as WE last wrote it (-1: none)
+        /** Mtime of the persisted engine state (e.g. .jdb2 or sidecar code-data.json) as WE last wrote it (-1: none). */
+        default long persistenceMtime() { return jdb2Mtime(); }
+        default long jdb2Mtime() { return -1; }
     }
 
     /** Decompile slower than this pins the class's products (monsters like the
@@ -144,7 +146,7 @@ final class SearchIndex {
     }
 
     /** A rejected corpus supplies addresses to regenerate, NEVER text to adopt. */
-    Set<String> recoveryCandidates() {
+    public Set<String> recoveryCandidates() {
         Set<String> out = new LinkedHashSet<>();
         if (dir == null) return out;
         try {
@@ -161,7 +163,8 @@ final class SearchIndex {
     private void initializeIdentity() {
         if (!sourceIdentity.isEmpty()) return;
         Map<String, Object> identity = host.indexSourceIdentity();
-        Map<String, Object> runtime = dev.workbench.server.Workspace.runtimeIdentity();
+        Map<String, Object> runtime = new LinkedHashMap<>(dev.workbench.server.Workspace.runtimeIdentity());
+        runtime.put("engineVersion", engineVersion);
         synchronized (this) {
             if (sourceIdentity.isEmpty()) {
                 sourceIdentity = identity; builderRuntime = runtime;
@@ -171,12 +174,12 @@ final class SearchIndex {
         }
     }
 
-    SearchIndex(Host host, String ticket, File dir, String engineVersion) {
+    public SearchIndex(Host host, String ticket, File dir, String engineVersion) {
         this(host, ticket, dir, engineVersion,
                 !"on-demand".equalsIgnoreCase(System.getenv("WORKBENCH_INDEX_MODE")));
     }
 
-    SearchIndex(Host host, String ticket, File dir, String engineVersion, boolean automaticRefresh) {
+    public SearchIndex(Host host, String ticket, File dir, String engineVersion, boolean automaticRefresh) {
         this.host = host;
         this.ticket = ticket;
         this.dir = dir;
@@ -184,22 +187,22 @@ final class SearchIndex {
         this.automaticRefresh = automaticRefresh;
     }
 
-    String ticket() { return ticket; }
+    public String ticket() { return ticket; }
 
-    long builtAtMs() { return builtAtMs; }
+    public long builtAtMs() { return builtAtMs; }
 
     /** Why the last tryWarmLoad() rejected an existing header (null = no header
      *  or accepted). Logged by the caller so a 3h rebuild never starts silently. */
     private volatile String warmRejectReason;
 
-    String warmRejectReason() { return warmRejectReason; }
+    public String warmRejectReason() { return warmRejectReason; }
 
     // ------------------------------------------------------------ persistence
 
     /** Case-insensitive-filesystem-safe gz filename: delegates to CorpusEncoding
      *  (fixed-arity, injective under Unicode folding). Kept as a one-line shim
      *  so the persistence code reads locally. */
-    static String encodeAddr(String addr) {
+    public static String encodeAddr(String addr) {
         return CorpusEncoding.encodeAddr(addr);
     }
 
@@ -303,7 +306,7 @@ final class SearchIndex {
      * The memory tier starts COLD (hydrated on first search); pending.json
      * classes (crash window) are re-queued for re-index immediately.
      */
-    synchronized long tryWarmLoad() {
+    public synchronized long tryWarmLoad() {
         if (dir == null) return -1;
         warmRejectReason = null;   // no stale reason from an earlier attempt (fix-1-r7 F5)
         File hf = new File(dir, "header.json");
@@ -463,25 +466,25 @@ final class SearchIndex {
            next open would adopt the PREVIOUS header as current after a failed
            commit, exactly the warm-adopt trap the r38 comment above documents) */
         if (!dev.workbench.registry.SidecarIO.writeAtomic(new File(dir, "header.json"), Json.write(h), "index header")) return false;
-        if (!recordJdb2Mtime(host.jdb2Mtime())) return false;
+        if (!recordPersistenceMtime(host.persistenceMtime())) return false;
         pending.removeAll(readyForHeader);
         readyForHeader.clear();
         return savePending();
     }
 
-    /** The jdb2 mtime as last written by US (build completion / save / close-save)
+    /** The persisted engine state mtime as last written by US (build completion / save / close-save)
      *  — the exact foreign-edit witness: any writer other than this process
-     *  leaves jdb2.lastModified() != the recorded value. Max-merged and re-read
+     *  leaves file.lastModified() != the recorded value. Max-merged and re-read
      *  at call sites so a concurrent save can't be clobbered by an older capture.
      *  Returns false when the witness could NOT be written — a silent failure
      *  here declares a foreign edit on the next open and rebuilds the full
      *  index for nothing, so the caller must be able to say so (round-14 F6). */
-    boolean recordJdb2Mtime(long mtime) {
+    public boolean recordPersistenceMtime(long mtime) {
         if (dir == null || mtime <= 0) return true;
         try {
             dir.mkdirs();
             Files.writeString(new File(dir, "jdb2-mtime").toPath(),
-                    String.valueOf(Math.max(recordedJdb2Mtime(), mtime)));
+                    String.valueOf(Math.max(recordedPersistenceMtime(), mtime)));
             return true;
         } catch (Exception e) {
             System.err.println("workbench: jdb2-mtime witness write failed in " + dir + ": " + e
@@ -490,7 +493,11 @@ final class SearchIndex {
         }
     }
 
-    long recordedJdb2Mtime() {
+    public boolean recordJdb2Mtime(long mtime) {
+        return recordPersistenceMtime(mtime);
+    }
+
+    public long recordedPersistenceMtime() {
         try {
             File f = new File(dir, "jdb2-mtime");
             if (f.isFile()) return Long.parseLong(Files.readString(f.toPath()).trim());
@@ -501,6 +508,10 @@ final class SearchIndex {
             System.err.println("workbench: jdb2-mtime witness read failed in " + dir + ": " + e);
         }
         return -1;
+    }
+
+    public long recordedJdb2Mtime() {
+        return recordedPersistenceMtime();
     }
 
     /** Cold → warm: hydrate the in-memory tier from the gz corpus. Single-flight
@@ -572,7 +583,7 @@ final class SearchIndex {
      *  generation gate stops its corpus writes, and the corpus dir is wiped
      *  only when the old builder is confirmed dead. NO-OP after kill() (review
      *  F6 r37: the javadoc hid that the call can be a total no-op). */
-    synchronized void start() {
+    public synchronized void start() {
         if (dead) return;   // kill() owns the end state (review finding 1 r36)
         boolean oldAlive = false;
         if (thread != null && thread.isAlive()) {
@@ -634,7 +645,7 @@ final class SearchIndex {
      * Never runs a decompile on the caller's thread. The label lookup takes the
      * engine lock OUTSIDE this class's monitor (lock order: engine → index).
      */
-    void invalidate(String staleAddr, String freshAddr) {
+    public void invalidate(String staleAddr, String freshAddr) {
         initializeIdentity();
         String label = freshAddr == null ? null : host.classLabel(freshAddr); // engine lock first
         synchronized (this) {
@@ -662,7 +673,7 @@ final class SearchIndex {
      *  array copy + a whole-file pending.json write per referrer class, so a
      *  rename over a hot method's ref set ran M×O(N) under the engine lock
      *  (fix-4 review X1). Per-element semantics identical to invalidate(cc,cc). */
-    void invalidateAll(java.util.Collection<String> addrs) {
+    public void invalidateAll(java.util.Collection<String> addrs) {
         if (addrs == null || addrs.isEmpty()) return;
         java.util.Set<String> set = new java.util.LinkedHashSet<>(addrs);
         set.remove(null);
@@ -777,7 +788,7 @@ final class SearchIndex {
         }
     }
 
-    void cancel() {
+    public void cancel() {
         cancel = true;
         interruptWorker();
         if ("building".equals(state)) state = "cancelled";
@@ -788,7 +799,7 @@ final class SearchIndex {
      * defers interruption of an active filesystem commit; pending work otherwise
      * remains recorded for the next open. */
     private volatile boolean dead;
-    void kill() {
+    public void kill() {
         dead = true;
         cancel();
     }
@@ -947,7 +958,7 @@ final class SearchIndex {
 
     /** The snapshot to query against (hydrates from the gz corpus first when
      *  cold; classes indexed so far while building — may be partial). */
-    List<Entry> entries() {
+    public List<Entry> entries() {
         ensureWarm();
         return entries;
     }
@@ -957,7 +968,7 @@ final class SearchIndex {
      * worker does not cancel explicit searches. Native calls never hold the index monitor;
      * generation/revision checks reject a render superseded by another edit or close.
      * Persistence failures retain pending work; this query may still use its fresh overlay. */
-    List<Entry> queryEntries() {
+    public List<Entry> queryEntries() {
         synchronized (queryRefresh) { return refreshForQuery(); }
     }
 
@@ -1022,7 +1033,7 @@ final class SearchIndex {
         }
     }
 
-    synchronized Map<String, Object> status() {
+    public synchronized Map<String, Object> status() {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("state", state);
         m.put("sourceIdentity", sourceIdentity);

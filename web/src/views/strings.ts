@@ -596,8 +596,10 @@ async function jumpFirstUse(){
   if (!list) return;                            // superseded, or failed — the card / the section said why
   let classAddr: string | null = null;
   for (const x of list as XrefRowObj[]) {
-    if (x && x.method && String(x.method).includes('->')){
-      classAddr = String(x.method).split('->')[0];
+    if (!x) continue;
+    const ref = x.method || x.addr || x.from;
+    if (ref && String(ref).includes('->')){
+      classAddr = String(ref).split('->')[0];
       break;
     }
   }

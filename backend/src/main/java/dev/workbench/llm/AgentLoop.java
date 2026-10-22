@@ -1401,6 +1401,7 @@ public final class AgentLoop {
             else if (o instanceof String str) s2 = str.trim();
             if (s2 != null && !s2.isEmpty() && !ids.contains(s2)) ids.add(s2);
         }
+        ids.sort(String.CASE_INSENSITIVE_ORDER.thenComparing(java.util.Comparator.naturalOrder()));
         return ids;
     }
 

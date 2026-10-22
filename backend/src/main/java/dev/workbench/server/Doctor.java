@@ -35,7 +35,7 @@ public final class Doctor {
 
     public Map<String, Object> run() throws OpException { return run(null); }
 
-    static final java.util.Set<String> ROW_IDS = java.util.Set.of("os", "jdk21", "jeb-engine", "web-build", "python3", "frida",
+    static final java.util.Set<String> ROW_IDS = java.util.Set.of("os", "jdk21", "jeb-engine", "jadx-engine", "web-build", "python3", "frida",
             "adb", "devices", "claude-cli", "llm-providers", "reversing-agent");
 
     /** rowsCsv: only these row ids (null = all) — the Runs preflight asks for adb,devices,frida,
@@ -58,6 +58,7 @@ public final class Doctor {
                 "macOS or Linux", "", false));
         if (on.test("jdk21")) rows.add(jdk());
         if (on.test("jeb-engine")) rows.add(engine());
+        if (on.test("jadx-engine")) rows.add(jadxEngine());
         if (on.test("web-build")) rows.add(web());
         if (on.test("python3")) rows.add(python());
         if (on.test("frida")) rows.add(frida());
@@ -99,21 +100,40 @@ public final class Doctor {
 
     private Map<String, Object> engine() {
         String home = System.getProperty("workbench.jebHome");
-        if (!Engines.jebAvailable())
+        boolean hasJadx = Engines.jadxAvailable();
+        if (!Engines.jebAvailable()) {
+            if (hasJadx) {
+                String jv = Engines.jadxVersion();
+                return row("jeb-engine", "warn", false, "JEB not on classpath (JADX " + (jv == null ? "embedded" : jv) + " is active)" + (home == null ? "" : " · jebHome=" + home),
+                        "an analysis engine (JEB or JADX)",
+                        "Optional when JADX is present: set JEB_HOME to an activated JEB install for JEB targets",
+                        false);
+            }
             return row("jeb-engine", "missing", true, "not on the classpath (mock-only server)" + (home == null ? "" : " · jebHome=" + home),
-                    "an explicitly selected, already licensed JEB installation",
+                    "an explicitly selected, already licensed JEB installation (or JADX)",
                     "Set JEB_HOME to your personal installation before starting an isolated local workbench; no license activation is performed",
                     false);
-        String version = null;
-        try {
-            Object v = Class.forName("dev.workbench.engine.jeb.JebCore").getMethod("version").invoke(null);
-            version = v == null ? null : String.valueOf(v);
-        } catch (Throwable t) {
-            version = "version unavailable: " + t.getClass().getSimpleName();
         }
+        String version = Engines.jebVersion();
         return row("jeb-engine", "ok", true, "external engine" + (home == null ? "" : " at " + home)
                 + " · " + (version == null ? "not booted yet (opens with the first target)" : "JEB " + version),
                 "an explicitly selected, already licensed JEB installation", "", false);
+    }
+
+    private Map<String, Object> jadxEngine() {
+        if (!Engines.jadxAvailable()) {
+            boolean req = !Engines.jebAvailable();
+            boolean runtimeOnly = Engines.jadxRuntimeAvailable() && !Engines.jadxAdapterAvailable();
+            return row("jadx-engine", req ? "missing" : "warn", req,
+                    runtimeOnly ? "JADX jars on classpath, but JadxEngine adapter was not compiled" : "not on the classpath",
+                    "JADX release jars on classpath (JADX_HOME or backend/jadx)",
+                    runtimeOnly ? "Rebuild backend classes with JADX_HOME set (gradle -p backend classes)"
+                            : "Set JADX_HOME to an unpacked JADX release (e.g. jadx-1.5.6) or place its lib/ in backend/jadx/lib",
+                    false);
+        }
+        String version = Engines.jadxVersion();
+        return row("jadx-engine", "ok", false, "JADX " + (version == null ? "embedded" : version),
+                "JADX release jars on classpath", "", false);
     }
 
     private Map<String, Object> web() {

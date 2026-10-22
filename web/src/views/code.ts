@@ -14,34 +14,116 @@ import { beginJump } from '../ui/jumpstatus.js';
 import { invalidateParams } from '../ui/params.js';
 import type { CaretHit, CodeLine, CodeToken, DecompileData, EditResult, LineMark, MethodInfo, RelationRow, SymbolInfo, Token, WorkspaceState, OpParams } from '../types.js';
 
-const KEYWORDS = new Set(('package import public private protected static final class interface implements extends ' +
-  'return if else switch case default break new this null void byte int long boolean for while do throw throws ' +
-  'try catch finally super instanceof enum').split(' '));
+const KEYWORDS = new Set(('package import public private protected static final abstract synchronized volatile ' +
+  'transient native strictfp default class interface enum record implements extends permits ' +
+  'return if else switch case break continue goto for while do throw throws ' +
+  'try catch finally new this super instanceof assert yield var').split(' '));
 
-/* highlight one source line: comments, strings, keywords. Returns HTML. */
-function highlight(line: string): string {
+const PRIM_KEYWORDS = new Set(('void boolean byte char short int long float double null true false').split(' '));
+
+/* highlight a source segment [from, to) inside `line`, using the full line for
+   context (e.g. a trailing `(` or preceding `.`) and `state.inBlockComment` to
+   track multi-line `/* … * /` comments across lines. Returns HTML. */
+function highlightRange(line: string, from: number, to: number, state?: { inBlockComment: boolean; inLineComment?: boolean }): string {
   const out: string[] = [];
-  let i = 0, n = line.length;
+  let i = from;
   const isIdentStart = (c: string) => /[A-Za-z_$]/.test(c);
   const isIdent = (c: string) => /[A-Za-z0-9_$]/.test(c);
-  while (i < n){
+  const isDigit = (c: string) => /[0-9]/.test(c);
+  const isHexOrNumPart = (c: string) => /[0-9A-Fa-f_xXbBlLfFdDpP.]/.test(c);
+
+  if (state && state.inLineComment && i < to){
+    out.push('<span class="c">' + esc(line.slice(i, to)) + '</span>');
+    return out.join('');
+  }
+
+  if (state && state.inBlockComment && i < to){
+    const close = line.indexOf('*/', i);
+    if (close < 0 || close + 2 > to){
+      out.push('<span class="c">' + esc(line.slice(i, to)) + '</span>');
+      return out.join('');
+    }
+    out.push('<span class="c">' + esc(line.slice(i, close + 2)) + '</span>');
+    state.inBlockComment = false;
+    i = close + 2;
+  }
+
+  while (i < to){
     if (line[i] === '/' && line[i + 1] === '/'){
-      out.push('<span class="c">' + esc(line.slice(i)) + '</span>');
+      if (state) state.inLineComment = true;
+      out.push('<span class="c">' + esc(line.slice(i, to)) + '</span>');
       break;
     }
-    if (line[i] === '"'){
+    if (line[i] === '/' && line[i + 1] === '*'){
+      const close = line.indexOf('*/', i + 2);
+      if (close < 0){
+        if (state) state.inBlockComment = true;
+        out.push('<span class="c">' + esc(line.slice(i, to)) + '</span>');
+        break;
+      }
+      const end = Math.min(to, close + 2);
+      if (close + 2 > to && state) state.inBlockComment = true;
+      out.push('<span class="c">' + esc(line.slice(i, end)) + '</span>');
+      i = end;
+      continue;
+    }
+    if (line[i] === '"' || line[i] === '\''){
+      const q = line[i];
       let j = i + 1;
-      while (j < n && line[j] !== '"'){ if (line[j] === '\\') j++; j++; }
-      j = Math.min(n, j + 1);
-      out.push('<span class="s">' + esc(line.slice(i, j)) + '</span>');
+      while (j < to && line[j] !== q){ if (line[j] === '\\') j++; j++; }
+      j = Math.min(to, j + 1);
+      out.push('<span class="' + (q === '"' ? 's' : 'n') + '">' + esc(line.slice(i, j)) + '</span>');
+      i = j;
+      continue;
+    }
+    if (line[i] === '@' && i + 1 < to && isIdentStart(line[i + 1])){
+      let j = i + 1;
+      while (j < to && (isIdent(line[j]) || (line[j] === '.' && j + 1 < to && isIdentStart(line[j + 1])))) j++;
+      out.push('<span class="an">' + esc(line.slice(i, j)) + '</span>');
+      i = j;
+      continue;
+    }
+    if (isDigit(line[i]) || (line[i] === '.' && i + 1 < to && isDigit(line[i + 1]) && (i === 0 || !isIdent(line[i - 1])))){
+      let j = i + 1;
+      while (j < to && isHexOrNumPart(line[j])){
+        if ((line[j] === '+' || line[j] === '-') && !/[eEpP]/.test(line[j - 1])) break;
+        j++;
+      }
+      out.push('<span class="n">' + esc(line.slice(i, j)) + '</span>');
       i = j;
       continue;
     }
     if (isIdentStart(line[i])){
       let j = i;
-      while (j < n && isIdent(line[j])) j++;
+      while (j < to && isIdent(line[j])) j++;
       const w = line.slice(i, j);
-      out.push(KEYWORDS.has(w) ? '<span class="k">' + esc(w) + '</span>' : esc(w));
+      if (KEYWORDS.has(w)){
+        out.push('<span class="k">' + esc(w) + '</span>');
+      } else if (PRIM_KEYWORDS.has(w)){
+        out.push('<span class="kp">' + esc(w) + '</span>');
+      } else {
+        // Look ahead in the full line for call parens `foo(`, or classify UpperCamel / UPPER_CONST
+        let k = j;
+        while (k < line.length && line[k] === ' ') k++;
+        if (line[k] === '('){
+          out.push('<span class="fn">' + esc(w) + '</span>');
+        } else if (w.length > 1 && /^[A-Z][A-Z0-9_]+$/.test(w) && /[A-Z]/.test(w)){
+          out.push('<span class="cn">' + esc(w) + '</span>');
+        } else if (/^[A-Z]/.test(w)){
+          out.push('<span class="ty">' + esc(w) + '</span>');
+        } else if (i > 0 && line[i - 1] === '.' && !(i >= 5 && line.slice(i - 5, i) === 'this.')){
+          // Qualified member access without parens (e.g. msg.kind), excluding package/import lines
+          const trimmed = line.trimStart();
+          if (!trimmed.startsWith('package ') && !trimmed.startsWith('import '))
+            out.push('<span class="fl">' + esc(w) + '</span>');
+          else
+            out.push(esc(w));
+        } else if (i >= 5 && line.slice(i - 5, i) === 'this.'){
+          out.push('<span class="fl">' + esc(w) + '</span>');
+        } else {
+          out.push(esc(w));
+        }
+      }
       i = j;
       continue;
     }
@@ -51,6 +133,11 @@ function highlight(line: string): string {
   return out.join('');
 }
 
+/* highlight one source line: comments, strings, keywords, types, calls, numbers. Returns HTML. */
+export function highlight(line: string, state?: { inBlockComment: boolean }): string {
+  return highlightRange(line, 0, line.length, state);
+}
+
 /* normalize server token shapes: mock {col,len,symbol} · jeb {cs,ce,addr} */
 function tokCol(t: Token): number { return t.col !== undefined ? t.col : t.cs!; }
 function tokLen(t: Token): number { return t.len !== undefined ? t.len : (t.ce! - t.cs!); }
@@ -58,19 +145,26 @@ function tokSym(t: Token): string | undefined { return t.symbol !== undefined ? 
 
 /* one java source line → HTML with navigable token spans (data-sym for follow/rename;
    data-kind survives empty-sym tokens — locals carry no addr (review: local xrefs)) */
-function renderLine(lineText: string, tokens: Token[] | undefined): string {
+function renderLine(lineText: string, tokens: Token[] | undefined, state?: { inBlockComment: boolean; inLineComment?: boolean }): string {
+  if (state) state.inLineComment = false;
+  const lineState = state || { inBlockComment: false, inLineComment: false };
   const marks = (tokens || []).slice().sort((a, b) => tokCol(a) - tokCol(b));
   let html = '', pos = 0;
   marks.forEach(function(t){
     const col = tokCol(t), len = tokLen(t);
     if (col < pos || len <= 0) return;                    // overlapping token — skip
-    html += highlight(lineText.slice(pos, col));
-    html += '<span class="nav" data-sym="' + esc(tokSym(t) || '') + '"' +
-            ' data-kind="' + esc(t.kind || '') + '">' +
-            esc(lineText.slice(col, col + len)) + '</span>';
+    html += highlightRange(lineText, pos, col, lineState);
+    if (lineState.inBlockComment || lineState.inLineComment){
+      html += highlightRange(lineText, col, col + len, lineState);
+    } else {
+      html += '<span class="nav" data-sym="' + esc(tokSym(t) || '') + '"' +
+              ' data-kind="' + esc(t.kind || '') + '">' +
+              esc(lineText.slice(col, col + len)) + '</span>';
+    }
     pos = col + len;
   });
-  html += highlight(lineText.slice(pos));
+  html += highlightRange(lineText, pos, lineText.length, lineState);
+  if (state) state.inLineComment = false;
   return html;
 }
 
@@ -251,18 +345,19 @@ async function loadSymbol0(symbol: string){
     const hit = agentCm.find(function(c){ return c.text === body || (body.length >= 24 && (c.text.includes(body) || body.includes(c.text))); });
     return hit ? { code: m[1], body: body, by: hit.by, confidence: hit.confidence, historyId: hit.historyId, addr: hit.addr } : null;
   };
+  const lexState = { inBlockComment: false };
   lines.forEach(function(text, idx){
     const ln = idx + 1;
     const row = document.createElement('div');
     row.className = 'cl';
-    const ac = agentCommentOf(text);
-    const sc = ac ? null : siteCommentOf(text);
+    const ac = lexState.inBlockComment ? null : agentCommentOf(text);
+    const sc = (lexState.inBlockComment || ac) ? null : siteCommentOf(text);
     if (sc){
       row.className = 'cl llmsite';
       row.dataset.cmHid = sc.historyId; row.dataset.cmBy = sc.by; row.dataset.cmAddr = sc.addr; row.dataset.cmText = sc.body;   // the comment's own menu (delete)
       row.innerHTML = '<span class="gm"></span><span class="ln">' + ln + '</span>' +
         '<div class="lcm" title="written by ' + esc(sc.by) + (sc.confidence != null ? ' · confidence ' + esc(String(sc.confidence)) : '') + '"><span class="llmtag">' + esc(sc.by) + '</span>// ' + esc(sc.body) + '</div>' +
-        '<span class="lc">' + renderLine(sc.code, byLine[ln]) + '</span>';
+        '<span class="lc">' + renderLine(sc.code, byLine[ln], lexState) + '</span>';
     } else if (ac){
       row.className = 'cl llmcm';
       row.dataset.cmHid = ac.historyId; row.dataset.cmBy = ac.by; row.dataset.cmAddr = ac.addr; row.dataset.cmText = ac.body;
@@ -271,7 +366,7 @@ async function loadSymbol0(symbol: string){
         '<span class="llmtag">' + esc(ac.by) + '</span>// ' + esc(ac.body) + '</span></span>';
     } else {
       row.innerHTML = '<span class="gm"></span><span class="ln">' + ln + '</span>' +
-        '<span class="lc">' + renderLine(text, byLine[ln]) + '</span>';
+        '<span class="lc">' + renderLine(text, byLine[ln], lexState) + '</span>';
     }
     code.appendChild(row);
   });

@@ -24,6 +24,15 @@
   --agt-soft:rgba(204,121,167,.12);
   --agt-line:rgba(204,121,167,.55);
   --glow:rgba(0,158,115,.45);              /* phosphor halo: bluish-green */
+  /* syntax & semantic listing inks — subtle Helio / Okabe–Ito palette */
+  --syn-kw:#334155;                        /* keywords: crisp slate + semibold */
+  --syn-prim:#005a8f;                      /* primitives & boolean/null literals: deep blue */
+  --syn-type:#006650;                      /* classes & types: muted bluish-green */
+  --syn-method:#005a8f;                    /* methods & calls: deep OI blue */
+  --syn-field:#8a4b08;                     /* fields: warm bronze-ochre */
+  --syn-const:#9a3e00;                     /* constants / static finals: deep vermillion-amber */
+  --syn-num:#9a4400;                       /* numeric & char literals: warm sienna */
+  --syn-ann:#6b5b7b;                       /* @Annotations: muted plum */
   --well:rgba(28,36,48,.05);
   --btn-top:#fbfaf6;
   --btn-bot:#edeae1;
@@ -57,6 +66,15 @@ body.dark{
   --agt-soft:rgba(204,121,167,.16);
   --agt-line:rgba(204,121,167,.6);
   --glow:rgba(86,180,233,.5);              /* phosphor halo: sky-blue in dark */
+  /* syntax & semantic listing inks — dark instrument mode */
+  --syn-kw:#b2bfd0;                        /* keywords: cool silver-blue + semibold */
+  --syn-prim:#69b8e6;                      /* primitives & boolean/null literals: sky blue */
+  --syn-type:#4abfa0;                      /* classes & types: muted seafoam-teal */
+  --syn-method:#7cc5f0;                    /* methods & calls: clear sky blue */
+  --syn-field:#d9a55b;                     /* fields: warm sand-amber */
+  --syn-const:#e59555;                     /* constants / static finals: warm copper */
+  --syn-num:#e09a5c;                       /* numeric & char literals: soft amber */
+  --syn-ann:#b695c0;                       /* @Annotations: muted lavender */
   --well:rgba(0,0,0,.28);
   --btn-top:#262c34;
   --btn-bot:#1d2229;

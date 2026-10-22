@@ -79,6 +79,7 @@ check_jdk() {
   for c in "${JAVA_HOME:-}" \
            "$( [ "$OS" = Darwin ] && /usr/libexec/java_home -v 21 2>/dev/null || true )" \
            /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home \
+           "$HOME_DIR"/.gradle/jdks/*21* \
            /usr/lib/jvm/temurin-21-jdk-* /usr/lib/jvm/java-21-openjdk* /usr/lib/jvm/java-21* /usr/lib/jvm/zulu21*; do
     [ -n "$c" ] && [ -x "$c/bin/java" ] || continue
     if "$c/bin/java" -version 2>&1 | grep -q 'version "21[."]'; then found="$c"; break; fi   # not head -1: JDK_JAVA_OPTIONS prints a NOTE line first
@@ -108,9 +109,17 @@ check_gradle() {
     Darwin) fix="brew install gradle" ;;
     *) fix="curl -s https://get.sdkman.io | bash && sdk install gradle   # distro gradle packages are too old" ;;
   esac
+  local gbin=""
   if have gradle; then
-    local v; v="$(run_to 40 gradle --version 2>/dev/null | awk '/^Gradle /{print $2; exit}')"
-    if [ -n "$v" ] && [ "$(vermajor "$v")" -ge 8 ]; then row gradle ok yes "gradle $v" "gradle 8+" "" no
+    gbin="gradle"
+  elif [ -x "./gradlew" ]; then
+    gbin="./gradlew"
+  elif compgen -G "$HOME_DIR/.gradle/wrapper/dists/gradle-*-bin/*/gradle-*/bin/gradle" >/dev/null; then
+    gbin="$(ls -d "$HOME_DIR"/.gradle/wrapper/dists/gradle-*-bin/*/gradle-*/bin/gradle | sort -V | tail -n 1)"
+  fi
+  if [ -n "$gbin" ]; then
+    local v; v="$(run_to 40 "$gbin" --version 2>/dev/null | awk '/^Gradle /{print $2; exit}')"
+    if [ -n "$v" ] && [ "$(vermajor "$v")" -ge 8 ]; then row gradle ok yes "gradle $v ($gbin)" "gradle 8+" "" no
     else row gradle missing yes "gradle ${v:-?} (need 8+)" "gradle 8+" "$fix" no; fi
   else
     row gradle missing yes "not on PATH" "gradle 8+" "$fix" no
@@ -173,11 +182,26 @@ check_python() {
 
 check_engine() {
   local home="${JEB_HOME:-backend/engine}"
+  local jadx=""
+  local c
+  for c in "${JADX_HOME:-}" "backend/jadx/lib" "backend/jadx"; do
+    [ -n "$c" ] || continue
+    if [ -d "$c/lib" ] && { compgen -G "$c/lib/jadx-*-all.jar" >/dev/null || compgen -G "$c/lib/jadx-core*.jar" >/dev/null; }; then jadx="$c/lib"; break; fi
+    if [ -d "$c" ] && { compgen -G "$c/jadx-*-all.jar" >/dev/null || compgen -G "$c/jadx-core*.jar" >/dev/null; }; then jadx="$c"; break; fi
+  done
   if [ -f "$home/bin/app/jeb.jar" ]; then
     local n; n="$(ls "$home"/bin/app/*.jar 2>/dev/null | wc -l | tr -d ' ')"
     row jeb-engine ok yes "JEB install at $home ($n jars)" "an activated JEB install (JEB_HOME)" "" no
+  elif [ -n "$jadx" ]; then
+    row jeb-engine warn no "no JEB install (JADX available at $jadx)" "an activated JEB install (JEB_HOME) or JADX" "optional when JADX is present: export JEB_HOME=/path/to/your/activated/jeb" no
   else
-    row jeb-engine missing yes "no JEB install (JEB_HOME unset, backend/engine absent; the server would run mock-only)" "an activated JEB install (JEB_HOME)" "export JEB_HOME=/path/to/your/activated/jeb   # used in place, nothing is copied" no
+    row jeb-engine missing yes "no JEB install (JEB_HOME unset, backend/engine absent; the server would run mock-only)" "an activated JEB install (JEB_HOME) or JADX" "export JEB_HOME=/path/to/your/activated/jeb   # or set JADX_HOME" no
+  fi
+  if [ -n "$jadx" ]; then
+    local jn; jn="$(ls "$jadx"/*.jar 2>/dev/null | wc -l | tr -d ' ')"
+    row jadx-engine ok no "JADX jars at $jadx ($jn jars)" "JADX release (JADX_HOME or backend/jadx)" "" no
+  else
+    row jadx-engine warn no "no JADX jars found" "JADX release (JADX_HOME or backend/jadx)" "export JADX_HOME=/path/to/jadx-1.5.6   # unpacked upstream JADX release" no
   fi
 }
 

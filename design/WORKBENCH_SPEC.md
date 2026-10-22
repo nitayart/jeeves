@@ -106,6 +106,16 @@ when no target is open) with three zones:
 
 ### 3.1 Capability interface
 
+Implementation status: the stock JADX 1.5.6 adapter reports `persist: "sidecar"`,
+`rename: true`, `comment: true`, and `smali: false`. APK/DEX inputs are supported;
+`.jdb2` remains JEB-only. Renames (including virtual override families, locals, and
+formal parameters) and class/member/instruction comments use JADX's public
+`ICodeData` API and persist at `<sidecar>/jadx/code-data.json` through checkpointed
+writes. The search corpus lives separately under `<sidecar>/jadx/search-index/` and
+is invalidated per affected class. Raw reference offsets are explicitly labeled
+`offsetUnit: "dex-code-unit"` (16-bit units), not JEB byte offsets or transformed
+IR positions.
+
 An engine adapter implements a single interface; every method is optional and
 capability flags declare what's real. The UI renders from the flags — a
 missing capability means the affordance is absent, never an error dialog.
@@ -151,9 +161,10 @@ also the answer for formats JEB/JADX don't cover.
   "decompile · xrefs · rename · graphs" vs "read-only · no graphs".
 - Write ops on a read-only engine: buttons absent, palette entries hidden
   (not disabled-with-tooltip — absent).
-- `persist: sidecar` engines store names/comments/tags in a
-  `<target>.gimlet/` sidecar directory (the old flows.json/runs pattern,
-  generalized). `persist: native` (JEB `.jdb2`) uses engine persistence.
+- `persist: sidecar` engines store engine edits beneath the target sidecar
+  (`<artifact>.workbench/jadx/code-data.json` for JADX); engine-neutral tags,
+  history, bookmarks, and flows remain alongside it. `persist: native` (JEB
+  `.jdb2`) uses engine persistence.
 - Mixed-engine workspaces are normal: tag colors and flow data are
   engine-neutral and live in the workspace layer, so annotations survive an
   engine swap on the same artifact (matched by original signature, as today).
@@ -398,9 +409,10 @@ Recommendation: **Gimlet** — used as the working name throughout this spec
    switching is a core requirement, worth the pixels.
 2. **Same artifact in two engines = two targets** — simpler state model;
    mockup shows `gmail.apk · JEB` and `gmail.apk · JADX` side by side.
-3. **JADX rename persistence: sidecar names map** keyed by original
-   signature (`<target>.<name>/names.json`), not the JEB bookmark trick —
-   the bookmark mechanism is engine-internal.
+3. **JADX write persistence: stock `ICodeData` sidecar** at
+   `<artifact>.workbench/jadx/code-data.json`, keyed by original JADX node/code
+   references. It retains symbol/local/parameter renames and comments without
+   forking JADX; checkpointed saves and history replay protect the crash window.
 4. **Heap: per-session budgets + global ceiling**, both surfaced in the
    status bar (`heap 3.2g` per target, `Σ 9.1g / 24g` global).
 5. **v1 ships JEB + JADX adapters**; Ghidra/IDA MCP bridges land in v1.1

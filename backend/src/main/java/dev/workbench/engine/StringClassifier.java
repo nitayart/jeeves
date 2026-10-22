@@ -1,11 +1,5 @@
-package dev.workbench.engine.jeb;
+package dev.workbench.engine;
 
-import com.pnfsoftware.jeb.core.units.code.android.IDexUnit;
-import com.pnfsoftware.jeb.core.units.code.android.dex.IDalvikInstruction;
-import com.pnfsoftware.jeb.core.units.code.android.dex.IDexClass;
-import com.pnfsoftware.jeb.core.units.code.android.dex.IDexCodeItem;
-import com.pnfsoftware.jeb.core.units.code.android.dex.IDexMethod;
-import com.pnfsoftware.jeb.core.units.code.android.dex.IDexMethodData;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,17 +12,17 @@ import java.util.Map;
  * content://, cert/key PEM headers, file paths, a crypto-algorithm dictionary,
  * base64/hex via charset + length + entropy.
  *
- * Usage layer (JEB): one pass per referrer method — track const-string loads
- * (dest register → pool index), then for each following invoke within a small
- * window check whether a tracked register is an argument; the invoke target
- * decides the type (Cipher.getInstance ⇒ crypto usage-confirmed, Uri.parse /
- * Intent.setData ⇒ url, PackageManager permission calls ⇒ permission,
- * Intent action ⇒ intent), regardless of what the bytes look like.
+ * Usage layer: one pass per referrer method — track const-string loads
+ * (dest register → pool index), then for each following invoke within {@link #WINDOW}
+ * instructions check whether a tracked register is an argument; the invoke target
+ * matched against {@link #USAGE_RULES} decides the type (Cipher.getInstance ⇒ crypto
+ * usage-confirmed, Uri.parse / Intent.setData ⇒ url, PackageManager permission calls
+ * ⇒ permission, Intent action ⇒ intent), regardless of what the bytes look like.
  *
  * Every verdict is {name, confidence: lexical|usage, why} — lexical-only guesses
  * render dashed with '?' in the UI; usage verdicts state rule + call-site count.
  */
-final class StringClassifier {
+public final class StringClassifier {
 
     private StringClassifier() {}
 
@@ -47,7 +41,7 @@ final class StringClassifier {
             "BEGIN EC PRIVATE KEY", "BEGIN ENCRYPTED PRIVATE KEY", "BEGIN PKCS7" };
 
     /** Lexical types for a value: ordered, best first. Never empty ("plain" last). */
-    static List<Map<String, Object>> lexical(String v) {
+    public static List<Map<String, Object>> lexical(String v) {
         List<Map<String, Object>> out = new ArrayList<>();
         if (v == null || v.isEmpty()) {
             add(out, "plain", "lexical", "plain");
@@ -90,7 +84,7 @@ final class StringClassifier {
     }
 
     /** Shannon entropy per character — a uniform-charset test for base64/hex guesses. */
-    private static double shannon(String s) {
+    public static double shannon(String s) {
         int[] freq = new int[256];
         for (int i = 0; i < s.length(); i++) freq[s.charAt(i) & 0xFF]++;
         double h = 0;
@@ -113,7 +107,7 @@ final class StringClassifier {
     // ------------------------------------------------------------ usage layer
 
     /** An invoke rule: target-signature substring → {type, display name}. */
-    private static final String[][] USAGE_RULES = {
+    public static final String[][] USAGE_RULES = {
             { "Ljavax/crypto/Cipher;->getInstance", "crypto", "Cipher.getInstance" },
             { "Ljavax/crypto/KeyGenerator;->getInstance", "crypto", "KeyGenerator.getInstance" },
             { "Ljavax/crypto/SecretKeyFactory;->getInstance", "crypto", "SecretKeyFactory.getInstance" },
@@ -135,79 +129,12 @@ final class StringClassifier {
             { "Landroid/content/Intent;->setAction", "intent", "Intent.setAction" },
             { "Landroid/content/Intent;-><init>(Ljava/lang/String;", "intent", "Intent.<init>(action)" },
     };
-    private static final int WINDOW = 8;      // max instructions between const-string and its invoke
 
-    /**
-     * One pass over a method's instructions: const-string loads (dest register → pool
-     * index), then invokes within WINDOW using a tracked register. Emits facts
-     * {stringIndex → {type, detail, argPos}}. Runs on the engine lock (reads DEX).
-     */
-    static Map<Integer, String[]> usageFactsForMethod(IDexUnit dex, IDexMethod m) {
-        Map<Integer, String[]> facts = new LinkedHashMap<>();
-        IDexMethodData md = m.getData();
-        IDexCodeItem ci = md == null ? null : md.getCodeItem();
-        if (ci == null) return facts;
-        List<? extends IDalvikInstruction> insns = ci.getInstructions();
-        if (insns == null) return facts;
-        // reg → {stringIndex, instructionsAgo}
-        Map<Long, int[]> pending = new LinkedHashMap<>();
-        int pos = 0;
-        for (IDalvikInstruction insn : insns) {
-            int op = insn.getOpcode();
-            if (op == 0x1a || op == 0x1b) {                       // const-string(/jumbo)
-                Long dest = null;
-                int strIdx = -1;
-                for (int i = 0; i < insn.getParameterCount(); i++) {
-                    int t = insn.getParameterType(i);
-                    if (t == IDalvikInstruction.TYPE_REG && dest == null) dest = insn.getParameterValue(i);
-                    if (t == IDalvikInstruction.TYPE_IDX) strIdx = (int) insn.getParameterValue(i);
-                }
-                if (dest != null && strIdx >= 0) pending.put(dest, new int[] { strIdx, pos });
-            } else if (op >= 0x6e && op <= 0x72) {                // invoke-* family
-                // collect registers used + the method pool index
-                int methodIdx = -1;
-                List<Long> regs = new ArrayList<>();
-                for (int i = 0; i < insn.getParameterCount(); i++) {
-                    int t = insn.getParameterType(i);
-                    if (t == IDalvikInstruction.TYPE_IDX) methodIdx = (int) insn.getParameterValue(i);
-                    else if (t == IDalvikInstruction.TYPE_REG) regs.add(insn.getParameterValue(i));
-                    else if (t == IDalvikInstruction.TYPE_RGR) {
-                        long v = insn.getParameterValue(i);       // packed: count<<16 | firstReg? treat low/high
-                        int first = (int) (v & 0xFFFF), count = (int) ((v >>> 16) & 0xFFFF);
-                        for (long rr = first; rr < first + Math.max(1, count); rr++) regs.add(rr);
-                    }
-                }
-                if (methodIdx >= 0) {
-                    String target = null;
-                    try {
-                        IDexMethod callee = dex.getMethods().get(methodIdx);
-                        if (callee != null) target = callee.getSignature(false);
-                    } catch (Exception ignored) {}
-                    if (target != null) {
-                        for (String[] rule : USAGE_RULES) {
-                            if (!target.startsWith(rule[0]) && !target.contains(rule[0])) continue;
-                            // arg position of the tracked register (static: as listed;
-                            // instance: reg 0 is `this`, so positions shift by 1)
-                            boolean instance = op != 0x71;         // 0x71 = invoke-static
-                            for (int ri = 0; ri < regs.size(); ri++) {
-                                int[] fact = pending.get(regs.get(ri));
-                                if (fact == null || pos - fact[1] > WINDOW) continue;
-                                int argPos = instance ? ri - 1 : ri;
-                                if (argPos < 0) continue;          // the string is `this` — not an arg
-                                facts.putIfAbsent(fact[0],
-                                        new String[] { rule[1], "arg " + argPos + " of " + rule[2] });
-                            }
-                        }
-                    }
-                }
-            }
-            pos++;
-        }
-        return facts;
-    }
+    /** Max instructions between const-string and its invoke. */
+    public static final int WINDOW = 8;
 
     /** Types for a value given usage facts (usage verdicts outrank lexical). */
-    static List<Map<String, Object>> classify(String value, List<String[]> usage) {
+    public static List<Map<String, Object>> classify(String value, List<String[]> usage) {
         List<Map<String, Object>> out = new ArrayList<>();
         if (usage != null)
             for (String[] u : usage) {

@@ -1,4 +1,4 @@
-package dev.workbench.engine.jeb;
+package dev.workbench.engine.index;
 
 import dev.workbench.registry.Json;
 import java.nio.file.Files;

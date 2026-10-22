@@ -92,15 +92,17 @@ public final class LlmConfigIT {
     // ---------------------------------------------------------------- 0. parseModels (pure, hermetic — review M2)
     private static void parseModelsChecks() {
         check(List.of("a", "b").equals(AgentLoop.parseModels("{\"data\":[{\"id\":\"a\"},{\"id\":\"b\"}]}")),
-                "parseModels: OpenAI {data:[{id}]} preserves order");
+                "parseModels: OpenAI {data:[{id}]}");
+        check(List.of("a-model", "B-model", "z-model").equals(AgentLoop.parseModels("{\"data\":[{\"id\":\"z-model\"},{\"id\":\"a-model\"},{\"id\":\"B-model\"}]}")),
+                "parseModels: sorts model ids alphabetically (case-insensitive)");
         check(List.of("x", "y").equals(AgentLoop.parseModels("{\"models\":[\"x\",\"y\"]}")),
                 "parseModels: tolerates {models:[strings]}");
         check(List.of("m1", "m2").equals(AgentLoop.parseModels("[{\"id\":\"m1\"},{\"id\":\"m2\"}]")),
                 "parseModels: bare [{id}] list");
         check(List.of("s1", "s2").equals(AgentLoop.parseModels("[\"s1\",\"s2\"]")),
                 "parseModels: bare [string] list");
-        check(List.of("a", "b").equals(AgentLoop.parseModels("{\"data\":[{\"id\":\"a\"},{\"id\":\"a\"},{\"id\":\"b\"}]}")),
-                "parseModels: dedupes, first-seen order");
+        check(List.of("a", "b").equals(AgentLoop.parseModels("{\"data\":[{\"id\":\"b\"},{\"id\":\"a\"},{\"id\":\"a\"}]}")),
+                "parseModels: dedupes and sorts");
         check(List.of("123").equals(AgentLoop.parseModels("{\"data\":[{\"id\":123}]}")),
                 "parseModels: numeric id stringified to \"123\"");
         check(List.of("ok").equals(AgentLoop.parseModels("{\"data\":[{\"id\":\"\"},{\"foo\":1},{\"id\":\"ok\"}]}")),

@@ -1,6 +1,7 @@
 package dev.workbench.server;
 
 import dev.workbench.engine.Engine;
+import dev.workbench.engine.EngineProvider;
 import dev.workbench.engine.Engines;
 import dev.workbench.engine.MockEngine;
 import dev.workbench.registry.OpException;
@@ -57,6 +58,7 @@ public final class Workspace {
        (dedupe/navigate) and the source path the artifact was opened FROM
        (display/provenance — TargetMeta.path is the store copy) */
     private final Map<String, String> storeKeyByTid = new LinkedHashMap<>();
+    private final Map<String, String> engineByTid = new LinkedHashMap<>();
     private final Map<String, String> originByTid = new LinkedHashMap<>();
     private String activeProject;
     private String activeTarget;
@@ -122,8 +124,8 @@ public final class Workspace {
         java.time.Instant savedAt;
         synchronized (this) {
             TargetMeta tm = targets.get(tid);
-            File db = tm == null ? null : jdb2FileOf(tm.path());
-            savedAt = databaseTime(db);
+            File pf = persistenceFileFor(tid, tm);
+            savedAt = databaseTime(pf);
             entries = historyFor(tid).stream().map(LinkedHashMap<String, Object>::new).map(x -> (Map<String,Object>)x).toList();
         }
         List<RenameCoordinator.Claim> claims = new ArrayList<>();
@@ -497,7 +499,9 @@ public final class Workspace {
             }
         }
         Map<String, Object> db = new LinkedHashMap<>();
-        File j = path == null ? null : dbOpen ? path : jdb2For(path);
+        File pf;
+        synchronized (this) { pf = persistenceFileFor(tid, tm); }
+        File j = pf != null ? pf : (path == null ? null : dbOpen ? path : jdb2For(path));
         if (j != null) {
             db.put("file", j.getName());
             if (j.isFile()) { db.put("bytes", j.length()); db.put("modified", java.time.Instant.ofEpochMilli(j.lastModified()).toString()); }
@@ -546,9 +550,7 @@ public final class Workspace {
         boolean changed = !now.isEmpty() && (!String.valueOf(now.getProperty("git.sha")).equals(BOOT_BUILD.getProperty("git.sha")) || !String.valueOf(now.getProperty("built.at")).equals(BOOT_BUILD.getProperty("built.at")));
         m.put("build_file_changed_since_start", changed);
         if (changed) m.put("note", "the classes directory was rebuilt after this process started (" + now.getProperty("git.sha", "?") + "): the answers come from the BOOT build above — restart to serve the new one");
-        String engine = null;
-        try { Object v = Class.forName("dev.workbench.engine.jeb.JebCore").getMethod("version").invoke(null); engine = v == null ? null : String.valueOf(v); } catch (Throwable ignored) {}
-        m.put("engine", engine == null ? "no JEB engine (mock)" : "JEB " + engine);
+        m.put("engine", Engines.runtimeSummary());
         return m;
     }
 
@@ -750,8 +752,14 @@ public final class Workspace {
     /** The OPEN target with this durable store key, or null — public since batch 2: the apply
         path of a proposal resolves its target by key first (review b2-r1 H2). */
     public synchronized String tidForStoreKey(String key) {
+        return tidForStoreKey(key, null);
+    }
+
+    /** The OPEN target with this durable store key and optional engine ("jeb", "jadx"), or null. */
+    public synchronized String tidForStoreKey(String key, String engine) {
         for (Map.Entry<String, String> e : storeKeyByTid.entrySet()) {
             if (!e.getValue().equals(key)) continue;   // THE key — the first live target is not a match
+            if (engine != null && !engine.equalsIgnoreCase(engineOfTid(e.getKey()))) continue;
             Engine en = engines.get(e.getKey());
             if (en == null) continue;
             Object st = en.info().get("state");
@@ -759,6 +767,17 @@ public final class Workspace {
             return e.getKey();
         }
         return null;
+    }
+
+    private String engineOfTid(String tid) {
+        String eng = engineByTid.get(tid);
+        if (eng != null) return eng;
+        Engine e = engines.get(tid);
+        if (e != null) {
+            Object inf = e.info().get("engine");
+            if (inf != null) return String.valueOf(inf).toLowerCase(java.util.Locale.ROOT);
+        }
+        return "jeb";
     }
 
     /** project.delete {name} — WIPE the project dir (vs forget's park): maps,
@@ -862,10 +881,14 @@ public final class Workspace {
         List<Map<String, Object>> members = readMembers(projName);
         List<Object> items = new ArrayList<>();
         Map<String, String> liveByKey = new LinkedHashMap<>();   // storeKey → live tid (storeKeyByTid is tid → key)
+        Map<String, String> liveByKeyEngine = new LinkedHashMap<>();
         String projId = null;
         final java.util.Set<String> memberTids = new java.util.HashSet<>();
         synchronized (this) {
-            storeKeyByTid.forEach((tid, k) -> liveByKey.put(k, tid));
+            storeKeyByTid.forEach((tid, k) -> {
+                liveByKey.put(k, tid);
+                liveByKeyEngine.put(k + ":" + engineOfTid(tid).toLowerCase(java.util.Locale.ROOT), tid);
+            });
             for (Map<String, Object> p : projects.values())
                 if (projName.equals(p.get("name"))) projId = String.valueOf(p.get("id"));
             /* ONE membership read for the whole render (r2 nit): per-member
@@ -882,6 +905,7 @@ public final class Workspace {
             row.put("key", key);
             row.put("name", m.get("name"));
             row.put("storePath", m.get("storePath"));
+            if (m.get("engine") != null) row.put("engine", m.get("engine"));
             java.io.File dir = new java.io.File(storeRoot(), key);
             /* size = the jdb2's length — ONE stat, not a recursive dirSize walk
                per member per render (r2 F9: the WhatsApp entry is 2175+ files /
@@ -906,7 +930,8 @@ public final class Workspace {
             }
             row.put("sizeBytes", sz);
             row.put("hasJdb2", present);
-            String liveTid = liveByKey.get(key);
+            String mEng = m.get("engine") == null ? null : String.valueOf(m.get("engine")).toLowerCase(java.util.Locale.ROOT);
+            String liveTid = mEng != null ? liveByKeyEngine.get(key + ":" + mEng) : liveByKey.get(key);
             boolean open = false;
             String state = "closed";
             if (liveTid != null) {
@@ -949,6 +974,7 @@ public final class Workspace {
     public Map<String, Object> removeTarget(String projectParam, String idOrKey) throws OpException {
         String tid = null;
         String key;
+        String removedEngine = null;
         String liveName = null;
         boolean liveIsActive = false;
         /* ONE hold for the whole read picture (r2 F5): three off-monitor reads
@@ -959,6 +985,7 @@ public final class Workspace {
             if (tid == null)
                 for (Map.Entry<String, String> e : storeKeyByTid.entrySet())
                     if (e.getValue().equals(idOrKey)) { tid = e.getKey(); break; }
+            if (tid != null) removedEngine = engineOfTid(tid);
             key = tid != null ? storeKeyByTid.get(tid) : idOrKey;
             if (key == null) throw OpException.notFound("no such target: " + idOrKey, "");
             if (tid != null) {
@@ -988,7 +1015,7 @@ public final class Workspace {
             closeTarget(tid);
             closedEngine = true;
         }
-        boolean removed = memberRemove(projName, key);
+        boolean removed = memberRemove(projName, key, removedEngine);
         /* r2 F4: the polarity that matters — a torn-down engine with no row
            dropped is the failure; a key that was never a member AND nothing
            live is the plain not-found */
@@ -1131,10 +1158,11 @@ public final class Workspace {
                 for (String tid : ids) {
                     Engine e = engines.remove(tid);
                     TargetMeta tm = targets.remove(tid);
+                    String eng = engineByTid.remove(tid);
                     storeKeyByTid.remove(tid);
                     originByTid.remove(tid);
                     if (tm != null) {
-                        String key = jdb2KeyOf(tm.path());
+                        String key = reservationKeyOf(tm.path(), eng != null ? eng : "jeb");
                         reserveClosing(key);       // AT removal time: detached engines are never unreserved
                         reserved.add(key);
                     }
@@ -1187,6 +1215,12 @@ public final class Workspace {
         on one database through a case-variant). */
     private static boolean isJdb2Name(String path) {
         return path.toLowerCase(java.util.Locale.ROOT).endsWith(".jdb2");
+    }
+
+    private static String reservationKeyOf(String artifactPath, String engine) {
+        if (engine != null && !"jeb".equalsIgnoreCase(engine))
+            return engine.toLowerCase(java.util.Locale.ROOT) + ":" + jdb2KeyOf(artifactPath);
+        return jdb2KeyOf(artifactPath);
     }
 
     private static String jdb2KeyOf(String artifactPath) {
@@ -1268,7 +1302,8 @@ public final class Workspace {
             /* a re-keyed database's predecessor is still on disk until someone deletes it: a fact
                about this target the strip can show for as long as it is true (not only on a card) */
             TargetMeta tmRow = targets.get(tid);
-            File asideRow = tmRow == null ? null : newestAside(jdb2FileOf(tmRow.path()));
+            File asideRow = tmRow != null && "jeb".equalsIgnoreCase(engineOfTid(tid))
+                    ? newestAside(jdb2FileOf(tmRow.path())) : null;
             if (asideRow != null) {
                 Map<String, Object> rk = new LinkedHashMap<>();
                 rk.put("aside", asideRow.getName());
@@ -1374,6 +1409,11 @@ public final class Workspace {
         cross-project session when the new one won the race). */
     public synchronized Map<String, Object> liveTargetForPathForProject(String absolutePath,
             String projectId) throws OpException {
+        return liveTargetForPathForProject(absolutePath, projectId, null);
+    }
+
+    public synchronized Map<String, Object> liveTargetForPathForProject(String absolutePath,
+            String projectId, String engineFilter) throws OpException {
         String want = canon(absolutePath);
         /* projectId null = EMPTY workspace (2026-09-07): the live scan is GLOBAL
            anyway; "current project" is the empty set, not an exception. This was
@@ -1383,6 +1423,7 @@ public final class Workspace {
                 ? java.util.Set.of()
                 : new java.util.HashSet<>(projectTargetIds(projectId));
         for (TargetMeta tm : targets.values()) {
+            if (engineFilter != null && !engineFilter.equalsIgnoreCase(engineOfTid(tm.id()))) continue;
             /* the store keeps the COPY's path in tm.path(); the user's gesture
                carries the SOURCE path — match both (950876a-r1 #7: the cheap
                path arm went dead for source-path re-opens — every re-open paid
@@ -1442,6 +1483,7 @@ public final class Workspace {
         String want = jdb2KeyOf(jdb2AbsPath);   // the KEY comparison is canonical on both sides
         java.util.Set<String> cur = new java.util.HashSet<>(currentProjectTargetIds());
         for (TargetMeta tm : targets.values()) {
+            if (!"jeb".equalsIgnoreCase(engineOfTid(tm.id()))) continue;
             /* engine-less targets skip the key syscall (review finding 4 nit) */
             Engine e = engines.get(tm.id());
             if (e == null) continue;
@@ -1791,13 +1833,17 @@ public final class Workspace {
         }
         if (!f.isFile()) throw OpException.notFound("artifact not found: " + path, "");
         String type = detectType(f);
-        String engine = engineName == null || engineName.isBlank() ? defaultEngineFor(type) : engineName;
-        if (!engine.equalsIgnoreCase("jeb"))
+        String engine = (engineName == null || engineName.isBlank() ? defaultEngineFor(type) : engineName)
+                .trim().toLowerCase(java.util.Locale.ROOT);
+        if (!engine.equals("jeb") && !engine.equals("jadx"))
             throw OpException.unsupported("engine '" + engine + "' is not available in M1",
-                    "available: jeb (real) + the 4 mock fixtures");
+                    "available: jeb, jadx (real) + the 4 mock fixtures");
         if (!type.equals("apk") && !type.equals("dex") && !type.equals("jdb2"))
             throw OpException.unsupported("no engine for artifact type '" + type + "' yet",
-                    "M1: apk/dex/jdb2 via jeb; elf/mach-o arrive with the MCP-bridge engines");
+                    "M1: apk/dex/jdb2 via jeb, apk/dex via jadx; elf/mach-o arrive with the MCP-bridge engines");
+        if ("jdb2".equals(type) && !"jeb".equals(engine))
+            throw OpException.unsupported("a .jdb2 database is a JEB project file and cannot be opened with engine '" + engine + "'",
+                    "engine=" + engine);
 
         /* The empty-workspace auto-project name, decided OFF the monitor (the
            generic-name path may read the pull-provenance sidecar). Generic split
@@ -1864,13 +1910,13 @@ public final class Workspace {
            The monitor covers ONLY the wait + the scans (round-23 F2: the whole
            method used to be synchronized, making even the rollback close
            monitor-held) */
-        String waitKey = jdb2KeyOf(f.getAbsolutePath());   // same normalization as the reservation
+        String waitKey = reservationKeyOf(f.getAbsolutePath(), engine);   // same normalization as the reservation
         long deadline = System.nanoTime() + 180_000_000_000L;   // 3 min hard cap
         String prevActive;
         String openProject;
         Map<String, Object> live;
         File artifact = type.equals("jdb2") ? null : f;
-        File jdb2 = type.equals("jdb2") ? f : jdb2For(f);
+        File jdb2 = "jeb".equals(engine) ? (type.equals("jdb2") ? f : jdb2For(f)) : null;
         String storeJdb2Key = null;   // reserved alongside waitKey once the store entry exists
         synchronized (this) {
             /* the project is captured at ENTRY (round-24 F4), BEFORE the wait:
@@ -1912,7 +1958,7 @@ public final class Workspace {
             if (openProject != null && projects.get(openProject) == null)
                 throw OpException.notFound("project " + openProject + " closed mid-open"
                         + " — the target was not registered", "project=" + openProject);
-            live = liveTargetForPathForProject(f.getAbsolutePath(), openProject);
+            live = liveTargetForPathForProject(f.getAbsolutePath(), openProject, engine);
             openingPaths.add(waitKey);   // LAST statement of the block — nothing after it can throw
         }
         try {
@@ -2050,7 +2096,7 @@ public final class Workspace {
                         + " — retry the open", "path=" + f.getAbsolutePath());
             }
             String storeKey = storeKeyFor(f, type, aHash);
-            String liveTid = tidForStoreKey(storeKey);
+            String liveTid = tidForStoreKey(storeKey, engine);
             if (liveTid != null)
                 return navigateToTarget(liveTid, "open");
 
@@ -2134,12 +2180,13 @@ public final class Workspace {
            contentHashHistory. */
         Map<String, String> pathHashes = new HashMap<>();
         for (TargetMeta tm : snap) {
+            if (!engine.equalsIgnoreCase(engineOfTid(tm.id()))) continue;
             Engine e = engSnap.get(tm.id());
             if (e == null) continue;
             Object st = stateSnap.get(tm.id());
             if ("error".equals(st) || "closed".equals(st)) continue;
             if (samePath(tm.path(), f.getAbsolutePath())) continue;
-            if (aHash != null && samePath(jdb2KeyOf(tm.path()), waitKey)
+            if (aHash != null && samePath(reservationKeyOf(tm.path(), engine), waitKey)
                     && !("jdb2".equals(type) && f.getAbsolutePath().equals(waitKey))) {
                 String k = new File(tm.path()).getAbsolutePath();
                 /* one hash per FILE — the guard must precede the HASH, not just
@@ -2222,12 +2269,13 @@ public final class Workspace {
         java.util.Set<TargetMeta> keyTwins = new java.util.HashSet<>();
         java.util.Map<TargetMeta, String> twinNote = new java.util.HashMap<>();
         for (TargetMeta tm : snap) {
+            if (!engine.equalsIgnoreCase(engineOfTid(tm.id()))) continue;
             if (samePath(tm.path(), f.getAbsolutePath())) continue;
             Engine e = engines.get(tm.id());
             if (e == null) continue;
             Object st = e.info().get("state");
             if ("error".equals(st) || "closed".equals(st)) continue;
-            if (!samePath(jdb2KeyOf(tm.path()), waitKey)) continue;
+            if (!samePath(reservationKeyOf(tm.path(), engine), waitKey)) continue;
             if (aHash == null)
                 /* the CANDIDATE itself is unhashable — it passed isFile() at
                    entry, so this is a transient read failure, and every key-twin
@@ -2292,6 +2340,7 @@ public final class Workspace {
                         : "rename one artifact"), "target=" + tm.id());
         }
         java.util.function.Predicate<TargetMeta> conflict = tm -> {
+            if (!engine.equalsIgnoreCase(engineOfTid(tm.id()))) return false;
             if (keyTwins.contains(tm)) return true;
             if (samePath(tm.path(), f.getAbsolutePath())) return true;
             if (mineHash == null) return false;
@@ -2370,8 +2419,8 @@ public final class Workspace {
                re-keyed), and the copy into an entry being closed is the exact
                hazard the reservation exists for */
             String storeJdb2Key0 = "jdb2".equals(type) ? jdb2KeyOf(f.getAbsolutePath())
-                    : new java.io.File(new java.io.File(storeRoot(), storeKey),
-                            baseNoExt(f.getName()) + ".jdb2").getAbsolutePath();
+                    : reservationKeyOf(new java.io.File(new java.io.File(storeRoot(), storeKey),
+                            baseNoExt(f.getName()) + ".jdb2").getAbsolutePath(), engine);
             synchronized (this) {
                 long dl = System.nanoTime() + 180_000_000_000L;
                 while (closingPaths.containsKey(storeJdb2Key0)
@@ -2395,7 +2444,7 @@ public final class Workspace {
                    open from another path registered while we slept; registering a
                    second engine on the store's jdb2 is the round-24 F1 poisoning */
                 if (!storeJdb2Key0.equals(waitKey)) {
-                    String nowLive = tidForStoreKey(storeKey);
+                    String nowLive = tidForStoreKey(storeKey, engine);
                     if (nowLive != null)
                         return navigateToTarget(nowLive, "open");
                 }
@@ -2408,7 +2457,7 @@ public final class Workspace {
             StoreEntry se = prepareStoreEntry(f, type, storeKey, aHash);
             File fStore = "jdb2".equals(type) ? se.jdb2() : se.artifact();
             return openAndRegister(fStore, "jdb2".equals(type) ? null : se.artifact(),
-                    se.jdb2(), prevActive, openProject, autoName, storeKey, f);
+                    "jeb".equals(engine) ? se.jdb2() : null, prevActive, openProject, autoName, storeKey, f, engine);
         } finally {
             synchronized (this) {
                 openingPaths.remove(waitKey);
@@ -2428,7 +2477,7 @@ public final class Workspace {
         BEFORE registration — no ghost is possible there either (round-22 F2). */
     private Map<String, Object> openAndRegister(File f, File artifact, File jdb2,
             String prevActive, String openProject, String autoName,
-            String storeKey, File origin) throws OpException {
+            String storeKey, File origin, String engine) throws OpException {
         /* the id is minted HERE, not before the scans (round-29 F5: allocating
            it up front permanently burned one on every refused open — a retry
            loop inflated the counter by thousands with no target created) */
@@ -2436,7 +2485,7 @@ public final class Workspace {
            when that target is the store's .jdb2 opened by itself and this is its apk from another
            path, which no earlier dedupe sees. It is the SAME database, not a clash: go to it. Never
            past this point, where a "clash" with it would set a live database aside (review M1). */
-        if (jdb2 != null && jdb2.isFile()) {
+        if ("jeb".equals(engine) && jdb2 != null && jdb2.isFile()) {
             Map<String, Object> same = liveTargetForJdb2Key(jdb2.getAbsolutePath());
             if (same != null) return navigateToTarget(String.valueOf(same.get("id")), "open");
         }
@@ -2449,12 +2498,12 @@ public final class Workspace {
            every clash a re-analysis cannot resolve (a bare .jdb2, a key not on record). */
         final boolean gesture = Boolean.TRUE.equals(openRekey.get());
         final String asked = origin == null ? f.getName() : origin.getName();
-        String[] clash = Engines.preflightJeb(jdb2, artifact == null, asked);
+        String[] clash = "jeb".equals(engine) ? Engines.preflightJeb(jdb2, artifact == null, asked) : null;
         /* the holder is on its way out — closing, or detached with its close still queued behind a
            save: the user closed it and opened this. Not a clash to re-key around (minutes of
            analysis for a target that is seconds from gone), and not a refusal: wait for it, the
            way an open waits for a close of its own path, then load plainly (review H2). */
-        for (long dl = System.nanoTime() + 180_000_000_000L; gesture && clash != null && holderLeaving(clash); ) {
+        for (long dl = System.nanoTime() + 180_000_000_000L; "jeb".equals(engine) && gesture && clash != null && holderLeaving(clash); ) {
             if (System.nanoTime() > dl)
                 throw OpException.busy(asked + " shares its internal JEB key with a target that is still closing after 3 minutes"
                         + " — open it again when the workspace no longer lists a closing database", "jdb2=" + jdb2.getPath());
@@ -2482,7 +2531,7 @@ public final class Workspace {
                 }
                 throw OpException.busy(msg, "jdb2=" + jdb2.getPath());
             }
-        } else if (jdb2 != null && !jdb2.isFile()) {
+        } else if ("jeb".equals(engine) && jdb2 != null && !jdb2.isFile()) {
             /* no database but a re-key marker: a re-key begun earlier (an open that was interrupted,
                or backend/jdb2-rekey.sh) is finished by THIS open — it tells the same story */
             rekeyed = rekeyInFlight(jdb2);
@@ -2490,7 +2539,9 @@ public final class Workspace {
         String heapWarning = heapAdmission(artifact, jdb2, f.getName());   // refuses a non-human open that will not fit
         String id;
         synchronized (this) { id = "t" + (nextTargetNum++); }
-        Engine session = Engines.openJeb(id, f.getName(), f.getAbsolutePath(), artifact, jdb2);
+        File sidecarDir = artifact != null ? sidecarFor(artifact) : sidecarFor(f);
+        Engine session = Engines.open(engine, new EngineProvider.EngineOpenRequest(
+                id, f.getName(), f.getAbsolutePath(), artifact, jdb2, sidecarDir, Map.of()));
         Map<String, Object> proj = null;          // null/default on the attachFail path — never read there
         boolean sameProject = false;
         boolean autoCreated = false;   // this open created its own project (empty-boot path)
@@ -2515,6 +2566,7 @@ public final class Workspace {
             if (attachFail == null) {
             targets.put(id, new TargetMeta(id, f.getName(), f.getAbsolutePath()));
             engines.put(id, session);
+            engineByTid.put(id, engine);
             storeKeyByTid.put(id, storeKey);
             if (origin != null)
                 /* the path PLUS a size/mtime witness (r2 F11): the origin match
@@ -2542,7 +2594,8 @@ public final class Workspace {
                    a dangling pointer from an empty project) */
                 if (sameProject) activeTarget = id;
                 session.primeIndexReplay(indexReplayMap(id));      // corpus warm-load freshness
-                List<Map<String, Object>> replay = dirtyReplayFor(id, jdb2);   // crash-window recovery — after a re-key, the whole history
+                File pf = persistenceFileFor(id, targets.get(id));
+                List<Map<String, Object>> replay = dirtyReplayFor(id, pf);   // crash-window recovery — after a re-key, the whole history
                 session.primeDirtyReplay(replay);
                 if (rekeyed != null) rekeyed.put("edits", replay.size());
             } else {
@@ -2550,6 +2603,7 @@ public final class Workspace {
                    happens after the monitor drops, so the close can run off it) */
                 targets.remove(id);
                 engines.remove(id);
+                engineByTid.remove(id);
             }
             }
         }
@@ -2602,7 +2656,7 @@ public final class Workspace {
             /* membership (2026-09-08): the project records its target in
                targets.json — persisted only AFTER the analysis thread started,
                so a failed open never lists a ghost member */
-            memberAdd(String.valueOf(proj.get("name")), storeKey, f.getName(), f.getAbsolutePath());
+            memberAdd(String.valueOf(proj.get("name")), storeKey, f.getName(), f.getAbsolutePath(), engine);
             info.put("stored", "targets/" + storeKey);
             if (heapWarning != null) info.put("warning", heapWarning);   // a human's open that may not fit: said, not refused
             if (rekeyed != null) {
@@ -2616,6 +2670,7 @@ public final class Workspace {
             synchronized (this) {
                 targets.remove(id);
                 engines.remove(id);
+                engineByTid.remove(id);
                 storeKeyByTid.remove(id);
                 originByTid.remove(id);
                 try {
@@ -2747,7 +2802,7 @@ public final class Workspace {
     public synchronized Map<String, Object> targetChanges(String targetParam) throws OpException {
         String tid = resolveTargetIdOrActive(targetParam);
         TargetMeta tm = targets.get(tid);
-        File jdb2 = tm == null ? null : jdb2FileOf(tm.path());
+        File pf = persistenceFileFor(tid, tm);
         java.util.Set<String> renamed = new java.util.LinkedHashSet<>(), commented = new java.util.LinkedHashSet<>(), all = new java.util.LinkedHashSet<>();
         /* JEB addrs embed the name: a rename MOVES the symbol to newAddr, and a later comment (or a
            second rename) lands on that addr — counted naively that is two "symbols" for one method
@@ -2757,7 +2812,7 @@ public final class Workspace {
         /* only against a database that exists: with none yet (an analysis in flight, a re-key's
            replay, a mock target) nothing is "unsaved" in the dialog's sense — SAVE could not write
            it and DISCARD could not drop it */
-        for (Map<String, Object> e : jdb2 != null && jdb2.isFile() ? dirtyReplayFor(tid, jdb2) : List.<Map<String, Object>>of()) {
+        for (Map<String, Object> e : pf != null && pf.isFile() ? dirtyReplayFor(tid, pf) : List.<Map<String, Object>>of()) {
             String addr = String.valueOf(e.get("addr"));
             for (int hop = 0; hop < 64 && alias.containsKey(addr); hop++) addr = alias.get(addr);
             all.add(addr);
@@ -2775,20 +2830,31 @@ public final class Workspace {
         out.put("commented", commented.size());
         out.put("decompiled", e == null ? 0 : e.unsavedDecompilations());   // newly decompiled since the last save (the user's rule: worth saving too)
         out.put("dirty", e != null && Boolean.TRUE.equals(e.info().get("dirty")));
-        out.put("lastSaved", jdb2 != null && jdb2.isFile() ? java.time.Instant.ofEpochMilli(jdb2.lastModified()).toString() : null);
+        out.put("lastSaved", pf != null && pf.isFile() ? java.time.Instant.ofEpochMilli(pf.lastModified()).toString() : null);
         return out;
     }
 
     /** Discard only actions newer than the saved DB, including reversals of older entries.
      * Failed journal replacement leaves the original in-memory history and target open. */
-    private synchronized boolean discardUnsavedHistory(String tid, File jdb2) {
-        if (jdb2 == null || !jdb2.isFile()) return true;
+    private synchronized boolean discardUnsavedHistory(String tid, File pf) {
+        if (pf == null || !pf.isFile()) return true;
         List<Map<String,Object>> previous = historyFor(tid);
-        List<Map<String,Object>> discarded = HistoryJournal.discardAfter(previous, databaseTime(jdb2));
+        List<Map<String,Object>> discarded = HistoryJournal.discardAfter(previous, databaseTime(pf));
         history.put(tid, discarded);
         if (persistHistory(tid)) return true;
         history.put(tid, previous);
         return false;
+    }
+
+    /** The persistence file for a target: engine.persistenceFile() when available, else the .jdb2 sibling for JEB. */
+    private File persistenceFileFor(String tid, TargetMeta tm) {
+        Engine e = tid == null ? null : engines.get(tid);
+        if (e != null) {
+            File pf = e.persistenceFile();
+            if (pf != null) return pf;
+            if (!"jeb".equalsIgnoreCase(engineOfTid(tid))) return null;
+        }
+        return tm == null ? null : jdb2FileOf(tm.path());
     }
 
     /** The .jdb2 a target persists to: the artifact's sibling, or the path itself for a bare .jdb2 target. */
@@ -2853,13 +2919,14 @@ public final class Workspace {
                drop-then-resurrect the edits on reopen (review c7395d2 A2). */
             if (Boolean.FALSE.equals(save)) {
                 TargetMeta tmD = targets.get(tid);
-                if (tmD != null && !discardUnsavedHistory(tid, jdb2FileOf(tmD.path())))
+                if (tmD != null && !discardUnsavedHistory(tid, persistenceFileFor(tid, tmD)))
                     throw OpException.io("could not record the discard durably (history.json not written) — the target is unchanged and still open; save it, or retry close",
                             "target=" + tid);
             }
             currentProjectTargetIds().remove(tid);
             e = engines.remove(tid);
             TargetMeta tm = targets.remove(tid);
+            String eng = engineByTid.remove(tid);
             /* close ≠ remove-from-project: membership (targets.json) survives a
                close — the store identity maps die with the live session only */
             storeKeyByTid.remove(tid);
@@ -2876,7 +2943,7 @@ public final class Workspace {
                F7 — a leaked reservation hangs every later open for 3 minutes) */
             if (tm != null) {
                 name = tm.name();
-                path = jdb2KeyOf(tm.path());
+                path = reservationKeyOf(tm.path(), eng != null ? eng : "jeb");
                 reserveClosing(path);
             }
         }
@@ -3145,10 +3212,14 @@ public final class Workspace {
     }
 
     private static String defaultEngineFor(String type) {
-        return switch (type) {
-            case "apk", "dex", "jdb2" -> "jeb";
-            default -> "jeb";   // engine picker lands in a later milestone; jeb is the only real one
-        };
+        if ("jdb2".equals(type)) return "jeb";
+        String env = System.getenv("WORKBENCH_DEFAULT_ENGINE");
+        if (env != null && !env.isBlank()) return env.trim().toLowerCase(java.util.Locale.ROOT);
+        if ("apk".equals(type) || "dex".equals(type)) {
+            if (!Engines.jebAvailable() && Engines.jadxAdapterAvailable()) return "jadx";
+            return "jeb";
+        }
+        return "jeb";   // engine picker lands in a later milestone; jeb is the default real one
     }
 
     /** JEB native persistence: <name>.jdb2 next to the artifact (old Jeeves convention). */
@@ -3406,21 +3477,34 @@ public final class Workspace {
     }
 
     private void memberAdd(String projectName, String key, String name, String storePath) {
+        memberAdd(projectName, key, name, storePath, "jeb");
+    }
+
+    private void memberAdd(String projectName, String key, String name, String storePath, String engine) {
+        String normEng = (engine == null || engine.isBlank() ? "jeb" : engine).toLowerCase(java.util.Locale.ROOT);
         java.util.List<Map<String, Object>> ms = readMembers(projectName);
-        for (Map<String, Object> m : ms)
-            if (key.equals(m.get("key"))) return;      // already a member
+        for (Map<String, Object> m : ms) {
+            String mEng = m.get("engine") == null ? "jeb" : String.valueOf(m.get("engine")).toLowerCase(java.util.Locale.ROOT);
+            if (key.equals(m.get("key")) && normEng.equals(mEng)) return;      // already a member with this engine
+        }
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("key", key);
         row.put("name", name);
         row.put("storePath", storePath);
+        row.put("engine", normEng.toUpperCase(java.util.Locale.ROOT));
         row.put("addedAt", java.time.Instant.now().toString());
         ms.add(row);
         writeMembers(projectName, ms);
     }
 
     private boolean memberRemove(String projectName, String key) {
+        return memberRemove(projectName, key, null);
+    }
+
+    private boolean memberRemove(String projectName, String key, String engine) {
         java.util.List<Map<String, Object>> ms = readMembers(projectName);
-        boolean removed = ms.removeIf(m -> key.equals(m.get("key")));
+        boolean removed = ms.removeIf(m -> key.equals(m.get("key"))
+                && (engine == null || engine.equalsIgnoreCase(String.valueOf(m.getOrDefault("engine", "jeb")))));
         if (removed) writeMembers(projectName, ms);
         return removed;
     }
@@ -4051,6 +4135,7 @@ public final class Workspace {
                 row.putIfAbsent("key", key);
                 if (m.get("name") != null) row.putIfAbsent("name", m.get("name"));
                 if (m.get("storePath") != null) row.putIfAbsent("storePath", m.get("storePath"));
+                if (m.get("engine") != null) row.putIfAbsent("engine", m.get("engine"));
                 @SuppressWarnings("unchecked")
                 List<String> projs = (List<String>) row.computeIfAbsent("projects", k -> new ArrayList<String>());
                 if (!projs.contains(pname)) projs.add(pname);
@@ -4075,6 +4160,10 @@ public final class Workspace {
                 if (openable == null && (n.endsWith(".apk") || n.endsWith(".dex") || n.endsWith(".so"))) openable = x;
                 last = Math.max(last, x.lastModified());
             }
+            if (openable != null) {
+                java.io.File jadxCodeData = new java.io.File(sidecarFor(openable), "jadx/code-data.json");
+                if (jadxCodeData.isFile()) last = Math.max(last, jadxCodeData.lastModified());
+            }
             String sp = row.get("storePath") == null ? null : String.valueOf(row.get("storePath"));
             if (sp == null || !new java.io.File(sp).isFile()) {
                 java.io.File jdb2 = null;
@@ -4086,9 +4175,11 @@ public final class Workspace {
             row.put("present", present);
             row.put("lastUsed", last);
             row.put("lastUsedIso", java.time.Instant.ofEpochMilli(last).toString());
-            String tid = tidForStoreKey(String.valueOf(row.get("key")));
+            String rowEng = row.get("engine") == null ? null : String.valueOf(row.get("engine"));
+            String tid = tidForStoreKey(String.valueOf(row.get("key")), rowEng);
+            if (tid == null) tid = tidForStoreKey(String.valueOf(row.get("key")));
             if (tid != null) row.put("open", tid);
-            row.put("engine", "JEB");
+            row.putIfAbsent("engine", "JEB");
         }
         List<Map<String, Object>> rows = new ArrayList<>(byKey.values());
         rows.sort((a, b) -> Long.compare(((Number) b.get("lastUsed")).longValue(), ((Number) a.get("lastUsed")).longValue()));

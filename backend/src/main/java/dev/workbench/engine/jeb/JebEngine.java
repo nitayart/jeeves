@@ -54,7 +54,9 @@ import com.pnfsoftware.jeb.core.units.code.java.JavaDocument;
 import com.pnfsoftware.jeb.core.util.DecompilerHelper;
 import com.pnfsoftware.jeb.util.graph.Digraph;
 import dev.workbench.engine.Engine;
+import dev.workbench.engine.StringClassifier;
 import dev.workbench.engine.TypeNames;
+import dev.workbench.engine.index.SearchIndex;
 import dev.workbench.registry.OpException;
 import java.io.File;
 import java.util.ArrayList;
@@ -4212,7 +4214,7 @@ public final class JebEngine implements Engine, SearchIndex.Host {
                 IDexUnit dex = owningDex(m.getAddress());
                 if (dex == null) continue;
                 for (Map.Entry<Integer, String[]> f
-                        : StringClassifier.usageFactsForMethod(dex, m).entrySet())
+                        : JebStringWalker.usageFactsForMethod(dex, m).entrySet())
                     usage.computeIfAbsent(f.getKey(), k -> new ArrayList<>()).add(f.getValue());
             }
             List<Map<String, Object>> out = new ArrayList<>();
@@ -5887,6 +5889,11 @@ public final class JebEngine implements Engine, SearchIndex.Host {
     private void clearNewDecomp() { newDecomp.clear(); newDecompCount = 0; decompDirty = false; }
     @Override
     public int unsavedDecompilations() { return newDecompCount; }
+
+    @Override
+    public File persistenceFile() {
+        return jdb2;
+    }
 
     /** Save (when dirty) and unload the project, releasing the .jdb2 lock. */
     @Override

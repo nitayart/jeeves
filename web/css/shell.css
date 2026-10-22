@@ -156,9 +156,16 @@ body.chrome-off #col-side + .split-v{display:none}   /* no dead splitter hotzone
 }
 .cx{display:flex;white-space:pre;min-width:max-content}
 .cxn{width:22px;flex:none;text-align:right;padding-right:8px;color:var(--ink-faint);user-select:none}
-.mr-code-body .k{color:var(--ink);font-weight:700}
+.mr-code-body .k{color:var(--syn-kw);font-weight:600}
+.mr-code-body .kp{color:var(--syn-prim);font-weight:600}
 .mr-code-body .s{color:var(--blue-ink)}
 .mr-code-body .c{color:var(--ink-faint);font-style:italic}
+.mr-code-body .n{color:var(--syn-num)}
+.mr-code-body .an{color:var(--syn-ann)}
+.mr-code-body .ty,.mr-code-body .nav[data-kind="class"],.mr-code-body .nav[data-kind="interface"],.mr-code-body .nav[data-kind="type"]{color:var(--syn-type)}
+.mr-code-body .fn,.mr-code-body .nav[data-kind="method"]{color:var(--syn-method)}
+.mr-code-body .fl,.mr-code-body .nav[data-kind="field"]{color:var(--syn-field)}
+.mr-code-body .cn,.mr-code-body .nav[data-kind="constant"]{color:var(--syn-const)}
 
 /* ============================ NAV BAR ==================================== */
 .navbar{
@@ -548,9 +555,17 @@ body.dark .panel.floating{box-shadow:var(--bevel),0 8px 30px rgba(0,0,0,.55)}
 }
 .cl.cur .ln{color:var(--blue);font-weight:600;text-shadow:0 0 8px var(--glow)} /* LIVE */
 .lc{color:var(--ink)}
-.lc .k{color:var(--ink);font-weight:700}
+.lc .k{color:var(--syn-kw);font-weight:600}
+.lc .kp{color:var(--syn-prim);font-weight:600}
 .lc .s{color:var(--blue-ink)}
 .lc .c{color:var(--ink-faint);font-style:italic}
+.lc .n{color:var(--syn-num)}
+.lc .an{color:var(--syn-ann)}
+.lc .ty,.lc .nav[data-kind="class"],.lc .nav[data-kind="interface"],.lc .nav[data-kind="type"]{color:var(--syn-type)}
+.lc .fn,.lc .nav[data-kind="method"]{color:var(--syn-method)}
+.lc .fl,.lc .nav[data-kind="field"]{color:var(--syn-field)}
+.lc .cn,.lc .nav[data-kind="constant"]{color:var(--syn-const)}
+.lc .nav[data-kind="local"]{color:var(--ink)}
 /* an agent's comment: its own colour and a left rule, the author as a small tag, wrapped at
    ~96 columns within its numbered row (the row keeps the engine's line number) */
 .cl.llmcm{box-shadow:inset 2px 0 0 var(--agt);background:color-mix(in srgb, var(--agt) 6%, transparent)}
@@ -1948,7 +1963,7 @@ body.dark .wbmodal{background:rgba(16,19,23,.6)}
 .wbm-card{width:460px;background:var(--paper,#f4f2ec);border:1px solid var(--line,#d8d4c8);box-shadow:0 8px 32px rgba(28,36,48,.25);padding:12px}
 .wbm-title{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--ink,#1c2430);margin-bottom:6px}
 .wbm-sym{font-size:10px;color:var(--ink-faint);margin-bottom:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.wbm-card input{width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:5px 7px;background:var(--paper2,#eceadf);color:var(--ink,#1c2430);border:1px solid var(--line,#d8d4c8);outline:none}
+.wbm-card input{width:100%;box-sizing:border-box;font:inherit;font-size:12px;padding:5px 7px;background:var(--panel2,#efede6);color:var(--ink,#1c2430);border:1px solid var(--line,#d8d4c8);outline:none}
 .wbm-card input:focus{border-color:var(--blue,#0072B2)}
 .wbm-err{min-height:14px;font-size:10px;color:var(--verm,#D55E00);margin-top:5px}
 .wbm-prog{min-height:14px;font-size:10px;color:var(--ink-dim);margin-top:5px;font-variant-numeric:tabular-nums}
@@ -2000,7 +2015,7 @@ body.dark .wbmodal{background:rgba(16,19,23,.6)}
 .mp-note:empty{display:none}
 
 /* launcher BROWSE pane (server-side fs.list — a pick is a path, not an upload) */
-.wbm-fs{margin-top:8px;border:1px solid var(--line,#d8d4c8);background:var(--paper2,#eceadf)}
+.wbm-fs{margin-top:8px;border:1px solid var(--line,#d8d4c8);background:var(--panel2,#efede6)}
 .wbm-fsbar{display:flex;align-items:center;gap:6px;padding:4px 6px;border-bottom:1px solid var(--line,#d8d4c8)}
 .wbm-fsbar .btn{font-size:9px;padding:2px 6px}
 .wbm-fsdir{flex:1;min-width:0;font:10px var(--mono);color:var(--ink-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}

@@ -52,6 +52,7 @@ find_jdk21() {
   for c in "${JAVA_HOME:-}" \
            "$( [ "$(uname -s)" = Darwin ] && /usr/libexec/java_home -v 21 2>/dev/null || true )" \
            /Library/Java/JavaVirtualMachines/temurin-21.jdk/Contents/Home \
+           "$HOME"/.gradle/jdks/*21* \
            /usr/lib/jvm/temurin-21-jdk-* /usr/lib/jvm/java-21-openjdk* /usr/lib/jvm/java-21* /usr/lib/jvm/zulu21*; do
     [ -n "$c" ] && [ -x "$c/bin/java" ] || continue
     # match the version line itself: JDK_JAVA_OPTIONS / _JAVA_OPTIONS print a NOTE line first
@@ -76,6 +77,34 @@ if [ -n "${JEB_HOME:-}" ]; then
   export JEB_HOME="$ENGINE"   # gradle (build.gradle) compiles against the same install
 else
   ENGINE="$SCRIPT_DIR/engine"
+fi
+
+# The JADX install: an explicit $JADX_HOME wins, else backend/jadx.
+# Accepts either a stock release zip (lib/jadx-*-all.jar) or split jars (lib/jadx-core*.jar).
+has_jadx_jars() {
+  [ -d "$1" ] && { compgen -G "$1/jadx-*-all.jar" >/dev/null || compgen -G "$1/jadx-core*.jar" >/dev/null; }
+}
+JADX_CP=""
+if [ -n "${JADX_HOME:-}" ]; then
+  if has_jadx_jars "$JADX_HOME/lib"; then
+    JADX_DIR="$(cd "$JADX_HOME/lib" && pwd)"
+  elif has_jadx_jars "$JADX_HOME"; then
+    JADX_DIR="$(cd "$JADX_HOME" && pwd)"
+  else
+    echo "[workbench] ERROR: JADX_HOME=$JADX_HOME has no jadx-*-all.jar or jadx-core*.jar (in lib/ or root)" >&2
+    exit 1
+  fi
+  JADX_HOME="$(cd "$JADX_HOME" && pwd)"
+  export JADX_HOME
+  JADX_CP=":$JADX_DIR/*"
+else
+  for cand in "$SCRIPT_DIR/jadx/lib" "$SCRIPT_DIR/jadx"; do
+    if has_jadx_jars "$cand"; then
+      JADX_DIR="$(cd "$cand" && pwd)"
+      JADX_CP=":$JADX_DIR/*"
+      break
+    fi
+  done
 fi
 
 # WORKBENCH_RUN_ONLY=1: start what is already built and build nothing — no npm, no gradle. For
@@ -105,7 +134,21 @@ if [ "$RUN_ONLY" != 1 ] && [ -f "$REPO_ROOT/web/package.json" ]; then
 fi
 
 cd "$SCRIPT_DIR"
-[ "$RUN_ONLY" = 1 ] || gradle -q classes
+if [ "$RUN_ONLY" != 1 ]; then
+  if command -v gradle >/dev/null 2>&1; then
+    gradle -q classes
+  elif [ -x "$REPO_ROOT/gradlew" ]; then
+    "$REPO_ROOT/gradlew" -p "$SCRIPT_DIR" -q classes
+  elif compgen -G "$HOME/.gradle/wrapper/dists/gradle-*-bin/*/gradle-*/bin/gradle" >/dev/null; then
+    GRADLE_BIN="$(ls -d "$HOME"/.gradle/wrapper/dists/gradle-*-bin/*/gradle-*/bin/gradle | sort -V | tail -n 1)"
+    "$GRADLE_BIN" -p "$SCRIPT_DIR" -q classes
+  elif [ -d "$SCRIPT_DIR/build/classes/java/main/dev/workbench" ]; then
+    echo "[workbench] NOTE: gradle not on PATH — using existing backend/build/classes" >&2
+  else
+    echo "[workbench] ERROR: gradle not found on PATH (and no gradlew found)" >&2
+    exit 1
+  fi
+fi
 
 # Mock fixtures (dev/test demo targets) stay OUT of the interactive server by
 # default; ITs run their own servers without this and keep them.
@@ -133,12 +176,20 @@ if [ -f "$ENGINE/bin/app/jeb.jar" ]; then
     ${JVM_HOME_ARGS[@]+"${JVM_HOME_ARGS[@]}"} \
     --add-opens java.base/java.lang=ALL-UNNAMED \
     -Dworkbench.jebHome="$ENGINE" \
-    -cp "build/classes/java/main:$ENGINE/bin/app/*" \
+    -cp "build/classes/java/main:$ENGINE/bin/app/*${JADX_CP}" \
     dev.workbench.engine.jeb.LocalJebLauncher "$REPO_ROOT/web"
 else
-  echo "[workbench] NOTE: no JEB install (JEB_HOME unset, backend/engine absent) — mock-only mode (set JEB_HOME)" >&2
+  if [ -n "$JADX_CP" ]; then
+    echo "[workbench] JADX install: $JADX_DIR (no JEB install)" >&2
+    XMX="${WORKBENCH_XMX:-8g}"
+    XMS="${WORKBENCH_XMS:-512m}"
+  else
+    echo "[workbench] NOTE: no JEB/JADX install (JEB_HOME/JADX_HOME unset) — mock-only mode" >&2
+    XMX="${WORKBENCH_XMX:-2g}"
+    XMS="${WORKBENCH_XMS:-256m}"
+  fi
   # shellcheck disable=SC2086
-  exec "$JAVA_HOME/bin/java" -Xms"${WORKBENCH_XMS:-256m}" -Xmx"${WORKBENCH_XMX:-2g}" -Djava.awt.headless=true ${WORKBENCH_JAVA_OPTS:-} \
-      -Djava.io.tmpdir="$WORKBENCH_HOME/tmp" ${JVM_HOME_ARGS[@]+"${JVM_HOME_ARGS[@]}"} -cp build/classes/java/main \
+  exec "$JAVA_HOME/bin/java" -Xms"$XMS" -Xmx"$XMX" -Djava.awt.headless=true ${WORKBENCH_JAVA_OPTS:-} \
+      -Djava.io.tmpdir="$WORKBENCH_HOME/tmp" ${JVM_HOME_ARGS[@]+"${JVM_HOME_ARGS[@]}"} -cp "build/classes/java/main${JADX_CP}" \
       dev.workbench.server.WorkbenchServer "$REPO_ROOT/web"
 fi

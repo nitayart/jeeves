@@ -20,6 +20,12 @@ public final class CheckpointedFileSave {
 
     public static Path marker(Path destination) { return Path.of(destination.toAbsolutePath() + ".save-in-progress.json"); }
 
+    private static String suffixOf(Path p) {
+        String name = p.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 ? name.substring(dot) : ".bak";
+    }
+
     public static boolean write(Path destination, Writer writer) throws Exception {
         Path absolute = destination.toAbsolutePath();
         Files.createDirectories(absolute.getParent());
@@ -31,7 +37,7 @@ public final class CheckpointedFileSave {
         receipt.put("destination", absolute.toString());
         receipt.put("startedAt", java.time.Instant.now().toString());
         if (Files.exists(absolute)) {
-            Path backup = backups.resolve(absolute.getFileName() + "." + java.util.UUID.randomUUID() + ".jdb2");
+            Path backup = backups.resolve(absolute.getFileName() + "." + java.util.UUID.randomUUID() + suffixOf(absolute));
             Files.copy(absolute, backup, StandardCopyOption.COPY_ATTRIBUTES);
             SidecarIO.forceFile(backup);
             SidecarIO.forceDirectory(backups);
@@ -85,7 +91,7 @@ public final class CheckpointedFileSave {
             SidecarIO.forceDirectory(evidence.getParent());
         }
         if (backup != null) {
-            Path replacement = Files.createTempFile(destination.getParent(), ".restore-", ".jdb2");
+            Path replacement = Files.createTempFile(destination.getParent(), ".restore-", suffixOf(destination));
             try {
                 Files.copy(backup, replacement, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
                 SidecarIO.forceFile(replacement);

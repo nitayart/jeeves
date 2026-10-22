@@ -32,7 +32,7 @@ const FQCN = 'com.google.android.gm.sync.MessageSyncHandler';
 /* ---- target strip from workspace.state ---- */
 function ledFor(t: Target, active?: boolean){
   if (active) return '<span class="led g"></span>';
-  if (t.state && t.state !== 'ready' && t.engine === 'JEB') return '<span class="led o"></span>';
+  if (t.state && t.state !== 'ready') return '<span class="led o"></span>';
   /* no name-pattern fixtures (.so → "agent working", wallet → "device attached") —
      presence.whereis and device.list answer those for real now */
   return '';

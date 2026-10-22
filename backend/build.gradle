@@ -47,6 +47,16 @@ if (System.getenv('JEB_HOME') && !hasEngine) {
     throw new GradleException('Explicit JEB_HOME has no bin/app/jeb.jar: ' + engineDir)
 }
 
+def jadxDir = file(System.getenv('JADX_HOME') ?: "${rootProject.projectDir}/jadx")
+def jadxLibDir = new File(jadxDir, 'lib').isDirectory() ? new File(jadxDir, 'lib') : jadxDir
+def jadxJars = fileTree(dir: jadxLibDir, include: '*.jar')
+def hasJadx = jadxLibDir.isDirectory() && jadxLibDir.listFiles({ d, n ->
+    (n.startsWith('jadx-core') || (n.startsWith('jadx-') && n.endsWith('-all.jar'))) && n.endsWith('.jar')
+} as FilenameFilter)
+if (System.getenv('JADX_HOME') && !hasJadx) {
+    throw new GradleException('Explicit JADX_HOME has no jadx-*-all.jar or jadx-core*.jar in lib/ or root: ' + jadxDir)
+}
+
 if (hasEngine) {
     dependencies {
         compileOnly engineJars
@@ -55,7 +65,39 @@ if (hasEngine) {
 } else {
     sourceSets.main.java.exclude 'dev/workbench/engine/jeb/**'
     sourceSets.test.java.exclude 'dev/workbench/it/**'
-    logger.lifecycle('NOTE: no JEB install (JEB_HOME unset, backend/engine absent) — building mock-only')
+    logger.lifecycle('NOTE: no JEB install (JEB_HOME unset, backend/engine absent) — excluding jeb package')
+}
+
+if (hasJadx) {
+    dependencies {
+        compileOnly jadxJars
+        runtimeOnly jadxJars
+        testCompileOnly jadxJars
+        testRuntimeOnly jadxJars
+    }
+} else {
+    sourceSets.main.java.exclude 'dev/workbench/engine/jadx/**'
+    sourceSets.test.java.exclude 'dev/workbench/engine/jadx/**'
+}
+
+tasks.register('jadxFixtureTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.workbench.engine.jadx.JadxFixtureTest'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    doFirst { if (!hasJadx) throw new GradleException('jadxFixtureTest requires JADX_HOME') }
+}
+
+tasks.register('jadxSmokeTest', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.workbench.engine.jadx.JadxSmokeTest'
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+    doFirst {
+        if (!hasJadx) throw new GradleException('jadxSmokeTest requires JADX_HOME')
+        def fixture = System.getenv('WORKBENCH_JADX_FIXTURE')
+        if (fixture) args fixture
+    }
 }
 
 // JVM flags JEB requires (SecurityManager opt-in, reflective access). Absolute paths: JavaExec workingDir is the repo root.
@@ -256,13 +298,10 @@ tasks.register('searchIndexPersistenceIT', JavaExec) {
     group = 'verification'
     description = 'Pending search-index work survives cancellation and failed corpus writes'
     classpath = sourceSets.test.runtimeClasspath
-    mainClass = 'dev.workbench.engine.jeb.SearchIndexPersistenceIT'
+    mainClass = 'dev.workbench.engine.index.SearchIndexPersistenceIT'
     environment 'WORKBENCH_INDEX_MODE', 'automatic'
     workingDir = repoRoot
     dependsOn 'compileTestJava'
-    doFirst {
-        if (!hasEngine) throw new GradleException('Compile this adapter test with an activated JEB_HOME')
-    }
 }
 
 // Native rename fixtures: no HTTP server or model, fresh homes and databases on each run.
@@ -688,6 +727,7 @@ tasks.register('messageLabIT', JavaExec) {
     persistenceTest: 'dev.workbench.persistence.PersistenceTest',
     historyJournalTest: 'dev.workbench.persistence.HistoryJournalTest',
     workspacePersistenceTest: 'dev.workbench.persistence.WorkspacePersistenceTest',
+    engineProviderContractTest: 'dev.workbench.engine.EngineProviderContractTest',
 ].each { taskName, entryPoint ->
     tasks.register(taskName, JavaExec) {
         group = 'verification'
@@ -699,4 +739,9 @@ tasks.register('messageLabIT', JavaExec) {
         workingDir = repoRoot
         dependsOn 'compileTestJava'
     }
+}
+
+tasks.named('test', Test) {
+    try { failOnNoDiscoveredTests = false } catch (MissingPropertyException ignored) {}
+    dependsOn 'persistenceTest', 'historyJournalTest', 'workspacePersistenceTest', 'engineProviderContractTest'
 }

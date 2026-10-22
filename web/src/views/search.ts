@@ -72,7 +72,17 @@ async function openHit(){
   const el = srchHits()[srchSel];
   if (!el) return;
   const f = flatHits[+el.getAttribute('data-f')!];
-  const addr = f.addr || (f.hit && f.hit.addr);
+  let addr = f.addr || (f.hit && f.hit.addr);
+  if (!addr && f.hit && f.hit.kind === 'strings' && f.hit.stringId != null){
+    const xr = await tryOpT('string.xrefs', { id: String(f.hit.stringId) });
+    const rows = xr.data || [];
+    for (const x of rows){
+      if (x && typeof x === 'object'){
+        const sym = x.method || x.addr || (x.from ? String(x.from).split('+')[0] : '');
+        if (sym){ addr = String(sym); break; }
+      }
+    }
+  }
   if (!addr) return;
   const line = f.hit && Number.isFinite(+f.hit.line!) ? +f.hit.line! : 0;
   /* the hit's target is the backend's label; resolve it against the state
@@ -103,7 +113,13 @@ async function openHit(){
       }
     } else {
       showCenter('code');
-      await loadSymbol(addr);
+      try {
+        await loadSymbol(addr);
+      } catch (e) {
+        const cls = String(addr).split('->')[0];
+        if (cls !== String(addr)) await loadSymbol(cls);
+        else throw e;
+      }
     }
     if (line > 0 && S.hooks.gotoLine) S.hooks.gotoLine(line);
   } catch (e) { /* unresolvable hit (stale index) — silent no-op per M6 bar */ }
